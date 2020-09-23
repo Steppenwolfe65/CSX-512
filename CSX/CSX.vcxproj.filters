@@ -36,17 +36,23 @@
     <ClInclude Include="sysrand.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="sha3_kat.h">
-      <Filter>Header Files\Tests</Filter>
-    </ClInclude>
     <ClInclude Include="testutils.h">
       <Filter>Header Files\Tests</Filter>
     </ClInclude>
     <ClInclude Include="csx.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="csx_kat.h">
+    <ClInclude Include="memutils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="csx_test.h">
       <Filter>Header Files\Tests</Filter>
+    </ClInclude>
+    <ClInclude Include="sha3_test.h">
+      <Filter>Header Files\Tests</Filter>
+    </ClInclude>
+    <ClInclude Include="csp.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -62,16 +68,22 @@
     <ClCompile Include="testutils.c">
       <Filter>Source Files\Tests</Filter>
     </ClCompile>
-    <ClCompile Include="sha3_kat.c">
-      <Filter>Source Files\Tests</Filter>
+    <ClCompile Include="csx.c">
+      <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="csx_kat.c">
+    <ClCompile Include="memutils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="csx_main.c">
       <Filter>Source Files\Tests</Filter>
     </ClCompile>
     <ClCompile Include="csx_test.c">
       <Filter>Source Files\Tests</Filter>
     </ClCompile>
-    <ClCompile Include="csx.c">
+    <ClCompile Include="sha3_test.c">
+      <Filter>Source Files\Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="csp.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

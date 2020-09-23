@@ -1,7 +1,26 @@
+/* The GPL version 3 License (GPLv3)
+*
+* Copyright (c) 2020 Digital Freedom Defence Inc.
+* This file is part of the QSC Cryptographic library
+*
+* This program is free software : you can redistribute it and / or modify
+* it under the terms of the GNU General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program. If not, see <http://www.gnu.org/licenses/>. */
+
 #ifndef QSC_COMMON_H
 #define QSC_COMMON_H
 
 #include <assert.h>
+#include <intrin.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -125,8 +144,14 @@
 #	define QSC_SYSTEM_IS_X86
 #endif
 
+#if defined(QSC_SYSTEM_IS_X64)
+#	define QSC_SIZE_MAX UINT64_MAX
+#else
+#	define QSC_SIZE_MAX UINT32_MAX
+#endif
+
 /* detect endianess */
-#define QSC_SYSTEM_IS_LITTLE_ENDIAN (((union { unsigned x; unsigned char c; }){1}).c)
+#define QSC_SYSTEM_IS_LITTLE_ENDIAN (((union { uint32_t x; uint8_t c; }){1}).c)
 
 /* define endianess of CPU */
 #if (!defined(QSC_SYSTEM_IS_LITTLE_ENDIAN))
@@ -144,13 +169,61 @@
 #	define __attribute__(a)
 #endif
 
-#include <stdbool.h>
-
-#if defined(QSC_SYSTEM_OS_WINDOWS)
-#	include <stdint.h>
-#else
-#	include "inttypes.h"
+// 128 bit unsigned integer support
+#if defined(__SIZEOF_INT128__) && defined(QSC_SYSTEM_IS_X64) && !defined(__xlc__)
+#	define QSC_SYSTEM_NATIVE_UINT128
+	// Prefer TI mode over __int128 as GCC rejects the latter in pedantic mode
+#	if defined(__GNUG__)
+		typedef uint32_t uint128_t __attribute__((mode(TI)));
+#	else
+		typedef unsigned __int128 uint128_t;
+#	endif
 #endif
+
+#if defined(QSC_SYSTEM_NATIVE_UINT128)
+// functions 'borrowed' from Botan ;)
+#	define QSC_SYSTEM_FAST_64X64_MUL(X,Y,Low,High)			\
+	do {													\
+      const uint128_t r = static_cast<uint128_t>(X) * Y;	\
+      *High = (r >> 64) & 0xFFFFFFFFFFFFFFFFULL;			\
+      *Low = (r) & 0xFFFFFFFFFFFFFFFFULL;					\
+	} while(0)
+
+#elif defined(QSC_SYSTEM_COMPILER_MSC) && defined(QSC_SYSTEM_IS_X64)
+#	include <intrin.h>
+#	pragma intrinsic(_umul128)
+#	define QSC_SYSTEM_FAST_64X64_MUL(X,Y,Low,High)			\
+	do {													\
+		*Low = _umul128(X, Y, High);						\
+	} while(0)
+
+#elif defined(QSC_SYSTEM_COMPILER_GCC)
+#	if defined(QSC_SYSTEM_ARCH_X86_X64)
+#		define QSC_SYSTEM_FAST_64X64_MUL(X,Y,Low,High)							\
+		do {																	\
+		asm("mulq %3" : "=d" (*High), "=X" (*Low) : "X" (X), "rm" (Y) : "cc");	\
+		} while(0)
+#	elif defined(QSC_SYSTEM_ARCH_ALPHA)
+#		define QSC_SYSTEM_FAST_64X64_MUL(X,Y,Low,High)							\
+		do {																	\
+		asm("umulh %1,%2,%0" : "=r" (*High) : "r" (X), "r" (Y));				\
+		*Low = X * Y;															\
+		} while(0)
+#	elif defined(QSC_SYSTEM_ARCH_IA64)
+#		define QSC_SYSTEM_FAST_64X64_MUL(X,Y,Low,High)							\
+		do {																	\
+		asm("xmpy.hu %0=%1,%2" : "=f" (*High) : "f" (X), "f" (Y));				\
+		*Low = X * Y;															\
+		} while(0)
+#	elif defined(QSC_SYSTEM_ARCH_PPC)
+#		define QSC_SYSTEM_FAST_64X64_MUL(X,Y,Low,High)							\
+		do {																	\
+		asm("mulhdu %0,%1,%2" : "=r" (*High) : "r" (X), "r" (Y) : "cc");		\
+		*Low = X * Y;															\
+		} while(0)
+#	endif
+#endif
+
 
 #define QSC_SYSTEM_SECMEMALLOC_DEFAULT 4096
 #define QSC_SYSTEM_SECMEMALLOC_MIN 16
@@ -176,17 +249,52 @@
 #	define QSC_SYSTEM_SECURE_ALLOCATOR
 #endif
 
+#define QSC_SYSTEM_STRHELPER(x) #x
+#define QSC_SYSTEM_TO_STRING(x) QSC_SYSTEM_STRHELPER(x)
+
+// instructs the compiler to skip optimizations on the contained function; closed with CEX_OPTIMIZE_RESUME 
+#if defined(QSC_SYSTEM_COMPILER_MSC)
+#	define QSC_SYSTEM_OPTIMIZE_IGNORE __pragma(optimize("", off))
+#elif defined(QSC_SYSTEM_COMPILER_GCC) || defined(QSC_SYSTEM_COMPILER_MINGW)
+	_Pragma(QSC_SYSTEM_TO_STRING(GCC optimize("O0")))
+#	define QSC_SYSTEM_TO_STRING #pragma GCC optimize ("O0"), #pragma GCC optimize ("O0")
+#elif defined(QSC_SYSTEM_COMPILER_CLANG)
+#	define QSC_SYSTEM_OPTIMIZE_IGNORE __attribute__((optnone))
+#elif defined(QSC_SYSTEM_COMPILER_INTEL)
+#	define QSC_SYSTEM_OPTIMIZE_IGNORE pragma optimize("", off) 
+#else
+#	define QSC_SYSTEM_OPTIMIZE_IGNORE 0
+#endif
+
+// end of section; resume compiler optimizations 
+#if defined(QSC_SYSTEM_COMPILER_MSC)
+#	define QSC_SYSTEM_OPTIMIZE_RESUME __pragma(optimize("", on))
+#elif defined(QSC_SYSTEM_COMPILER_GCC) || defined(QSC_SYSTEM_COMPILER_MINGW)
+//	_Pragma(QSC_SYSTEM_TO_STRING(GCC pop_options))
+#	define QSC_SYSTEM_OPTIMIZE_RESUME #pragma GCC pop_options
+#elif defined(CEX_COMPILER_INTEL)
+#	define QSC_SYSTEM_OPTIMIZE_RESUME pragma optimize("", on) 
+#else
+#	define QSC_SYSTEM_OPTIMIZE_RESUME 0
+#endif
 
 /* intrinsics support level */
+
+#if _MSC_VER >= 1600
+#	define QSC_WMMINTRIN_H 1
+#endif
+#if _MSC_VER >= 1700 && defined(_M_X64)
+#	define QSC_HAVE_AVX2INTRIN_H 1
+#endif
 
 /*
 * AVX512 Capabilities Check
 * TODO: future expansion (if you can test it, I'll add it)
-* links:
+* links: 
 * https://software.intel.com/en-us/intel-cplusplus-compiler-16.0-user-and-reference-guide
 * https://software.intel.com/en-us/articles/compiling-for-the-intel-xeon-phi-processor-and-the-intel-avx-512-isa
 * https://colfaxresearch.com/knl-avx512/
-*
+* 
 * #include <immintrin.h>
 * supported is 1: ex. __AVX512CD__ 1
 * F		__AVX512F__					Foundation
@@ -201,14 +309,14 @@
 * VNNIW	__AVX5124VNNIW__			Vector instructions for deep learning enhanced word variable precision
 * FMAPS	__AVX5124FMAPS__			Vector instructions for deep learning floating - point single precision
 * VPOPCNT	__AVX512VPOPCNTDQ__		?
-*
+* 
 * Note: AVX512 is currently untested, this flag enables support on a compliant system
 */
 
 /* Enable this define to support AVX512 on a compatible system */
 //#define CEX_AVX512_SUPPORTED
 
-#if defined(__AVX512F__) && (__AVX512F__ == 1) && defined(CEX_AVX512_SUPPORTED)
+#if defined(__AVX512F__) && (__AVX512F__ == 1)
 #	include <immintrin.h>
 #	if (!defined(__AVX512__))
 #		define __AVX512__
@@ -286,6 +394,12 @@
 */
 //#define QSC_SYSTEM_AESNI_ENABLED
 
+/*!
+* \def QSC_KECCAK_COMPACT_PERMUTATION
+* \brief Define to use the compact form of the keccak permutation function
+* if undefined, functions use the constant time expanded keccak permutation
+*/
+//#define QSC_KECCAK_COMPACT_PERMUTATION
 
 /*** McEliece ***/
 
@@ -321,6 +435,15 @@
 * Implement the Kyber S3Q3329N256 parameter set
 */
 //#define QSC_KYBER_S3Q3329N256
+
+
+/*** ECDH ***/
+
+/*!
+\def QSC_ECDH_S1EC25519
+* Implement the ECDH S1EC25519 parameter set
+*/
+#define QSC_ECDH_S1EC25519
 
 
 /*** Dilithium ***/
@@ -363,4 +486,14 @@
 * Implement the SphincsPlus S3S256SHAKE parameter set
 */
 //#define QSC_SPHINCSPLUS_S3S256SHAKE
+
+
+/*** ECDSA ***/
+
+/*!
+\def QSC_ECDSA_S1EC25519
+* Implement the ECDSA S1EC25519 parameter set
+*/
+#define QSC_ECDSA_S1EC25519
+
 #endif

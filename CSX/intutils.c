@@ -1,6 +1,6 @@
 #include "intutils.h"
 
-bool are_equal8(const uint8_t* a, const uint8_t* b, size_t length)
+bool qsc_intutils_are_equal8(const uint8_t* a, const uint8_t* b, size_t length)
 {
 	bool status;
 	size_t i;
@@ -19,7 +19,7 @@ bool are_equal8(const uint8_t* a, const uint8_t* b, size_t length)
 	return status;
 }
 
-void be8increment(uint8_t* output, size_t outlen)
+void qsc_intutils_be8increment(uint8_t* output, size_t outlen)
 {
 	size_t i = outlen;
 
@@ -30,13 +30,13 @@ void be8increment(uint8_t* output, size_t outlen)
 	} while (i != 0 && output[i] == 0);
 }
 
-uint16_t be8to16(const uint8_t* input)
+uint16_t qsc_intutils_be8to16(const uint8_t* input)
 {
 	return (((uint16_t)input[1]) | 
 		(uint16_t)((uint16_t)input[0] << 8U));
 }
 
-uint32_t be8to32(const uint8_t* input)
+uint32_t qsc_intutils_be8to32(const uint8_t* input)
 {
 	return (uint32_t)(input[3]) |
 		(((uint32_t)(input[2])) << 8) |
@@ -44,7 +44,7 @@ uint32_t be8to32(const uint8_t* input)
 		(((uint32_t)(input[0])) << 24);
 }
 
-uint64_t be8to64(const uint8_t* input)
+uint64_t qsc_intutils_be8to64(const uint8_t* input)
 {
 	return (uint64_t)(input[7]) |
 		(((uint64_t)(input[6])) << 8) |
@@ -56,13 +56,13 @@ uint64_t be8to64(const uint8_t* input)
 		(((uint64_t)(input[0])) << 56);
 }
 
-void be16to8(uint8_t* output, uint16_t value)
+void qsc_intutils_be16to8(uint8_t* output, uint16_t value)
 {
 	output[1] = (uint8_t)value & 0xFFU;
 	output[0] = (uint8_t)(value >> 8) & 0xFFU;
 }
 
-void be32to8(uint8_t* output, uint32_t value)
+void qsc_intutils_be32to8(uint8_t* output, uint32_t value)
 {
 	output[3] = (uint8_t)value & 0xFFU;
 	output[2] = (uint8_t)(value >> 8) & 0xFFU;
@@ -70,7 +70,7 @@ void be32to8(uint8_t* output, uint32_t value)
 	output[0] = (uint8_t)(value >> 24) & 0xFFU;
 }
 
-void be64to8(uint8_t* output, uint64_t value)
+void qsc_intutils_be64to8(uint8_t* output, uint64_t value)
 {
 	output[7] = (uint8_t)value & 0xFFU;
 	output[6] = (uint8_t)(value >> 8) & 0xFFU;
@@ -82,7 +82,7 @@ void be64to8(uint8_t* output, uint64_t value)
 	output[0] = (uint8_t)(value >> 56) & 0xFFU;
 }
 
-void clear8(uint8_t* a, size_t count)
+void qsc_intutils_clear8(uint8_t* a, size_t count)
 {
 	size_t i;
 
@@ -92,7 +92,7 @@ void clear8(uint8_t* a, size_t count)
 	}
 }
 
-void clear32(uint32_t* a, size_t count)
+void qsc_intutils_clear16(uint16_t* a, size_t count)
 {
 	size_t i;
 
@@ -102,7 +102,7 @@ void clear32(uint32_t* a, size_t count)
 	}
 }
 
-void clear64(uint64_t* a, size_t count)
+void qsc_intutils_clear32(uint32_t* a, size_t count)
 {
 	size_t i;
 
@@ -112,7 +112,17 @@ void clear64(uint64_t* a, size_t count)
 	}
 }
 
-void cmov(uint8_t* r, const uint8_t* x, size_t length, uint8_t b)
+void qsc_intutils_clear64(uint64_t* a, size_t count)
+{
+	size_t i;
+
+	for (i = 0; i < count; ++i)
+	{
+		a[i] = 0;
+	}
+}
+
+void qsc_intutils_cmov(uint8_t* r, const uint8_t* x, size_t length, uint8_t b)
 {
 	size_t i;
 
@@ -124,7 +134,7 @@ void cmov(uint8_t* r, const uint8_t* x, size_t length, uint8_t b)
 	}
 }
 
-void le8increment(uint8_t* output, size_t outlen)
+void qsc_intutils_le8increment(uint8_t* output, size_t outlen)
 {
 	size_t i;
 
@@ -143,13 +153,13 @@ void le8increment(uint8_t* output, size_t outlen)
 	}
 }
 
-uint16_t le8to16(const uint8_t* input)
+uint16_t qsc_intutils_le8to16(const uint8_t* input)
 {
 	return (((uint16_t)input[0]) |
 		(uint16_t)((uint16_t)input[1] << 8U));
 }
 
-uint32_t le8to32(const uint8_t* input)
+uint32_t qsc_intutils_le8to32(const uint8_t* input)
 {
 	return ((uint32_t)input[0]) |
 		((uint32_t)input[1] << 8) |
@@ -157,7 +167,7 @@ uint32_t le8to32(const uint8_t* input)
 		((uint32_t)input[3] << 24);
 }
 
-uint64_t le8to64(const uint8_t* input)
+uint64_t qsc_intutils_le8to64(const uint8_t* input)
 {
 	return ((uint64_t)input[0]) |
 		((uint64_t)input[1] << 8) |
@@ -169,13 +179,13 @@ uint64_t le8to64(const uint8_t* input)
 		((uint64_t)input[7] << 56);
 }
 
-void le16to8(uint8_t* output, uint16_t value)
+void qsc_intutils_le16to8(uint8_t* output, uint16_t value)
 {
 	output[0] = (uint8_t)value & 0xFFU;
 	output[1] = (uint8_t)(value >> 8) & 0xFFU;
 }
 
-void le32to8(uint8_t* output, uint32_t value)
+void qsc_intutils_le32to8(uint8_t* output, uint32_t value)
 {
 	output[0] = (uint8_t)value & 0xFFU;
 	output[1] = (uint8_t)(value >> 8) & 0xFFU;
@@ -183,7 +193,7 @@ void le32to8(uint8_t* output, uint32_t value)
 	output[3] = (uint8_t)(value >> 24) & 0xFFU;
 }
 
-void le64to8(uint8_t* output, uint64_t value)
+void qsc_intutils_le64to8(uint8_t* output, uint64_t value)
 {
 	output[0] = (uint8_t)value & 0xFFU;
 	output[1] = (uint8_t)(value >> 8) & 0xFFU;
@@ -195,47 +205,37 @@ void le64to8(uint8_t* output, uint64_t value)
 	output[7] = (uint8_t)(value >> 56) & 0xFFU;
 }
 
-void le64increment(uint64_t* output)
-{
-	++output[0];
-
-	if (output[0] == 0)
-	{
-		++output[1];
-	}
-}
-
-size_t maxu(size_t a, size_t b)
+size_t qsc_intutils_max(size_t a, size_t b)
 {
 	return (a > b) ? a : b;
 }
 
-size_t minu(size_t a, size_t b)
+size_t qsc_intutils_min(size_t a, size_t b)
 {
 	return (a < b) ? a : b;
 }
 
-uint32_t rotl32(uint32_t value, size_t shift)
+uint32_t qsc_intutils_rotl32(uint32_t value, size_t shift)
 {
 	return (value << shift) | (value >> ((sizeof(uint32_t) * 8) - shift));
 }
 
-uint64_t rotl64(uint64_t value, size_t shift)
+uint64_t qsc_intutils_rotl64(uint64_t value, size_t shift)
 {
 	return (value << shift) | (value >> ((sizeof(uint64_t) * 8) - shift));
 }
 
-uint32_t rotr32(uint32_t value, size_t shift)
+uint32_t qsc_intutils_rotr32(uint32_t value, size_t shift)
 {
 	return (value >> shift) | (value << ((sizeof(uint32_t) * 8) - shift));
 }
 
-uint64_t rotr64(uint64_t value, size_t shift)
+uint64_t qsc_intutils_rotr64(uint64_t value, size_t shift)
 {
 	return (value >> shift) | (value << ((sizeof(uint64_t) * 8) - shift));
 }
 
-int32_t verify(const uint8_t* a, const uint8_t* b, size_t length)
+int32_t qsc_intutils_verify(const uint8_t* a, const uint8_t* b, size_t length)
 {
 	size_t i;
 	uint16_t d;

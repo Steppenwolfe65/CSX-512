@@ -1,20 +1,71 @@
 #include "sha3.h"
 #include "intutils.h"
+#include "memutils.h"
 
-/*lint -e747 */
+#define KECCAK_CSHAKE_DOMAIN_ID 0x04
+#define KECCAK_KMAC_DOMAIN_ID 0x04
+#define KECCAK_PERMUTATION_ROUNDS 24
+#define KECCAK_SHA3_DOMAIN_ID 0x06
+#define KECCAK_SHAKE_DOMAIN_ID 0x1F
+#define KECCAK_STATE_BYTE_SIZE 200
 
-/* internal */
+/* keccak */
 
-static size_t left_encode(uint8_t* buffer, size_t value)
+static void keccak_absorb(uint64_t* state, keccak_rate rate, const uint8_t* input, size_t inplen, uint8_t domain)
+{
+	uint8_t msg[QSC_KECCAK_STATE_BYTE_SIZE];
+
+	while (inplen >= (size_t)rate)
+	{
+#if defined(QSC_SYSTEM_IS_LITTLE_ENDIAN)
+		qsc_memutils_xor((uint8_t*)state, input, rate);
+#else
+		for (size_t i = 0; i < rate / sizeof(uint64_t); ++i)
+		{
+			state[i] ^= qsc_intutils_le8to64(input + (sizeof(uint64_t) * i));
+		}
+#endif
+		qsc_keccak_permute(state);
+		inplen -= rate;
+		input += rate;
+	}
+
+	qsc_memutils_copy(msg, input, inplen);
+	msg[inplen] = domain;
+	qsc_memutils_clear(msg + inplen + 1, rate - inplen + 1);
+	msg[rate - 1] |= 128U;
+
+#if defined(QSC_SYSTEM_IS_LITTLE_ENDIAN)
+	qsc_memutils_xor((uint8_t*)state, msg, rate);
+#else
+	for (size_t i = 0; i < rate / 8; ++i)
+	{
+		state[i] ^= qsc_intutils_le8to64(msg + (8 * i));
+	}
+#endif
+}
+
+static void keccak_fast_absorb(uint64_t* state, const uint8_t* input, size_t inplen)
+{
+#if defined(QSC_SYSTEM_IS_LITTLE_ENDIAN)
+	qsc_memutils_xor((uint8_t*)state, input, inplen);
+#else
+	for (size_t i = 0; i < inplen / sizeof(uint64_t); ++i)
+	{
+		state[i] ^= qsc_intutils_le8to64(input + (sizeof(uint64_t) * i));
+	}
+#endif
+}
+
+static size_t keccak_left_encode(uint8_t* buffer, size_t value)
 {
 	size_t i;
 	size_t n;
 	size_t v;
 
-	/* jgu checked false warning */
-	/*lint -save -e722 */
-	for (v = value, n = 0; v != 0 && (n < sizeof(size_t)); ++n, v >>= 8) {};
-	/*lint -restore */
+	for (v = value, n = 0; v != 0 && (n < sizeof(size_t)); ++n, v >>= 8) 
+	{
+	}
 
 	if (n == 0)
 	{
@@ -31,16 +82,15 @@ static size_t left_encode(uint8_t* buffer, size_t value)
 	return (size_t)n + 1;
 }
 
-static size_t right_encode(uint8_t* buffer, size_t value)
+static size_t keccak_right_encode(uint8_t* buffer, size_t value)
 {
 	size_t i;
 	size_t n;
 	size_t v;
 
-	/* jgu checked false warning */
-	/*lint -save -e722 */
-	for (v = value, n = 0; v != 0 && (n < sizeof(size_t)); ++n, v >>= 8) {};
-	/*lint -restore */
+	for (v = value, n = 0; v != 0 && (n < sizeof(size_t)); ++n, v >>= 8) 
+	{
+	}
 
 	if (n == 0)
 	{
@@ -57,65 +107,67 @@ static size_t right_encode(uint8_t* buffer, size_t value)
 	return (size_t)n + 1;
 }
 
-/* keccak */
-
-static void keccak_absorb(uint64_t* state, size_t rate, const uint8_t* input, size_t inplen, uint8_t domain)
+static void keccak_squeezeblocks(uint64_t* state, uint8_t* output, size_t nblocks, keccak_rate rate)
 {
-	uint8_t msg[SHA3_STATE_SIZE * sizeof(uint64_t)];
-	size_t i;
-
-	while (inplen >= rate)
-	{
-		for (i = 0; i < rate / sizeof(uint64_t); ++i)
-		{
-			state[i] ^= le8to64(input + (sizeof(uint64_t) * i));
-		}
-
-		keccak_permute(state);
-
-		inplen -= rate;
-		input += rate;
-	}
-
-	for (i = 0; i < inplen; ++i)
-	{
-		msg[i] = input[i];
-	}
-
-	msg[inplen] = domain;
-
-	for (i = inplen + 1; i < rate; ++i)
-	{
-		msg[i] = 0;
-	}
-
-	msg[rate - 1] |= 128U;
-
-	for (i = 0; i < rate / 8; ++i)
-	{
-		state[i] ^= le8to64(msg + (8 * i));
-	}
-}
-
-static void keccak_squeezeblocks(uint64_t* state, uint8_t* output, size_t nblocks, size_t rate)
-{
-	size_t i;
-
 	while (nblocks > 0)
 	{
-		keccak_permute(state);
+		qsc_keccak_permute(state);
 
-		for (i = 0; i < (rate >> 3); ++i)
+#if defined(QSC_SYSTEM_IS_LITTLE_ENDIAN)
+		qsc_memutils_copy(output, (uint8_t*)state, rate);
+#else
+		for (size_t i = 0; i < (rate >> 3); ++i)
 		{
-			le64to8(output + sizeof(uint64_t) * i, state[i]);
+			qsc_intutils_le64to8(output + sizeof(uint64_t) * i, state[i]);
 		}
-
+#endif
 		output += rate;
 		nblocks--;
 	}
 }
 
-#ifdef KECCAK_COMPACT_PERMUTATION
+static void keccak_update(qsc_keccak_state* ctx, keccak_rate rate, const uint8_t* message, size_t msglen)
+{
+	assert(ctx != NULL);
+	assert(message != NULL);
+
+	if (msglen != 0)
+	{
+		if (ctx->position != 0 && (ctx->position + msglen >= (size_t)rate))
+		{
+			const size_t RMDLEN = rate - ctx->position;
+
+			if (RMDLEN != 0)
+			{
+				qsc_memutils_copy(ctx->buffer + ctx->position, message, RMDLEN);
+			}
+
+			keccak_fast_absorb(ctx->state, ctx->buffer, (size_t)rate);
+			qsc_keccak_permute(ctx->state);
+			ctx->position = 0;
+			message += RMDLEN;
+			msglen -= RMDLEN;
+		}
+
+		/* sequential loop through blocks */
+		while (msglen >= (size_t)rate)
+		{
+			keccak_fast_absorb(ctx->state, message, rate);
+			qsc_keccak_permute(ctx->state);
+			message += rate;
+			msglen -= rate;
+		}
+
+		/* store unaligned bytes */
+		if (msglen != 0)
+		{
+			qsc_memutils_copy(ctx->buffer + ctx->position, message, msglen);
+			ctx->position += msglen;
+		}
+	}
+}
+
+#ifdef QSC_KECCAK_COMPACT_PERMUTATION
 
 /* keccak round constants */
 static const uint64_t KeccakF_RoundConstants[KECCAK_PERMUTATION_ROUNDS] =
@@ -146,7 +198,7 @@ static const uint64_t KeccakF_RoundConstants[KECCAK_PERMUTATION_ROUNDS] =
 	0x8000000080008008ULL
 };
 
-void keccak_permute(uint64_t* state)
+void qsc_keccak_permute(uint64_t* state)
 {
 	uint64_t Aba; 
 	uint64_t Abe; 
@@ -247,22 +299,22 @@ void keccak_permute(uint64_t* state)
 		BCu = Abu ^ Agu^Aku^Amu^Asu;
 
 		/* thetaRhoPiChiIotaPrepareTheta */
-		Da = BCu ^ rotl64(BCe, 1);
-		De = BCa ^ rotl64(BCi, 1);
-		Di = BCe ^ rotl64(BCo, 1);
-		Do = BCi ^ rotl64(BCu, 1);
-		Du = BCo ^ rotl64(BCa, 1);
+		Da = BCu ^ qsc_intutils_rotl64(BCe, 1);
+		De = BCa ^ qsc_intutils_rotl64(BCi, 1);
+		Di = BCe ^ qsc_intutils_rotl64(BCo, 1);
+		Do = BCi ^ qsc_intutils_rotl64(BCu, 1);
+		Du = BCo ^ qsc_intutils_rotl64(BCa, 1);
 
 		Aba ^= Da;
 		BCa = Aba;
 		Age ^= De;
-		BCe = rotl64(Age, 44);
+		BCe = qsc_intutils_rotl64(Age, 44);
 		Aki ^= Di;
-		BCi = rotl64(Aki, 43);
+		BCi = qsc_intutils_rotl64(Aki, 43);
 		Amo ^= Do;
-		BCo = rotl64(Amo, 21);
+		BCo = qsc_intutils_rotl64(Amo, 21);
 		Asu ^= Du;
-		BCu = rotl64(Asu, 14);
+		BCu = qsc_intutils_rotl64(Asu, 14);
 		Eba = BCa ^ ((~BCe)&  BCi);
 		Eba ^= KeccakF_RoundConstants[i];
 		Ebe = BCe ^ ((~BCi)&  BCo);
@@ -271,15 +323,15 @@ void keccak_permute(uint64_t* state)
 		Ebu = BCu ^ ((~BCa)&  BCe);
 
 		Abo ^= Do;
-		BCa = rotl64(Abo, 28);
+		BCa = qsc_intutils_rotl64(Abo, 28);
 		Agu ^= Du;
-		BCe = rotl64(Agu, 20);
+		BCe = qsc_intutils_rotl64(Agu, 20);
 		Aka ^= Da;
-		BCi = rotl64(Aka, 3);
+		BCi = qsc_intutils_rotl64(Aka, 3);
 		Ame ^= De;
-		BCo = rotl64(Ame, 45);
+		BCo = qsc_intutils_rotl64(Ame, 45);
 		Asi ^= Di;
-		BCu = rotl64(Asi, 61);
+		BCu = qsc_intutils_rotl64(Asi, 61);
 		Ega = BCa ^ ((~BCe)&  BCi);
 		Ege = BCe ^ ((~BCi)&  BCo);
 		Egi = BCi ^ ((~BCo)&  BCu);
@@ -287,15 +339,15 @@ void keccak_permute(uint64_t* state)
 		Egu = BCu ^ ((~BCa)&  BCe);
 
 		Abe ^= De;
-		BCa = rotl64(Abe, 1);
+		BCa = qsc_intutils_rotl64(Abe, 1);
 		Agi ^= Di;
-		BCe = rotl64(Agi, 6);
+		BCe = qsc_intutils_rotl64(Agi, 6);
 		Ako ^= Do;
-		BCi = rotl64(Ako, 25);
+		BCi = qsc_intutils_rotl64(Ako, 25);
 		Amu ^= Du;
-		BCo = rotl64(Amu, 8);
+		BCo = qsc_intutils_rotl64(Amu, 8);
 		Asa ^= Da;
-		BCu = rotl64(Asa, 18);
+		BCu = qsc_intutils_rotl64(Asa, 18);
 		Eka = BCa ^ ((~BCe)&  BCi);
 		Eke = BCe ^ ((~BCi)&  BCo);
 		Eki = BCi ^ ((~BCo)&  BCu);
@@ -303,15 +355,15 @@ void keccak_permute(uint64_t* state)
 		Eku = BCu ^ ((~BCa)&  BCe);
 
 		Abu ^= Du;
-		BCa = rotl64(Abu, 27);
+		BCa = qsc_intutils_rotl64(Abu, 27);
 		Aga ^= Da;
-		BCe = rotl64(Aga, 36);
+		BCe = qsc_intutils_rotl64(Aga, 36);
 		Ake ^= De;
-		BCi = rotl64(Ake, 10);
+		BCi = qsc_intutils_rotl64(Ake, 10);
 		Ami ^= Di;
-		BCo = rotl64(Ami, 15);
+		BCo = qsc_intutils_rotl64(Ami, 15);
 		Aso ^= Do;
-		BCu = rotl64(Aso, 56);
+		BCu = qsc_intutils_rotl64(Aso, 56);
 		Ema = BCa ^ ((~BCe)&  BCi);
 		Eme = BCe ^ ((~BCi)&  BCo);
 		Emi = BCi ^ ((~BCo)&  BCu);
@@ -319,15 +371,15 @@ void keccak_permute(uint64_t* state)
 		Emu = BCu ^ ((~BCa)&  BCe);
 
 		Abi ^= Di;
-		BCa = rotl64(Abi, 62);
+		BCa = qsc_intutils_rotl64(Abi, 62);
 		Ago ^= Do;
-		BCe = rotl64(Ago, 55);
+		BCe = qsc_intutils_rotl64(Ago, 55);
 		Aku ^= Du;
-		BCi = rotl64(Aku, 39);
+		BCi = qsc_intutils_rotl64(Aku, 39);
 		Ama ^= Da;
-		BCo = rotl64(Ama, 41);
+		BCo = qsc_intutils_rotl64(Ama, 41);
 		Ase ^= De;
-		BCu = rotl64(Ase, 2);
+		BCu = qsc_intutils_rotl64(Ase, 2);
 		Esa = BCa ^ ((~BCe)&  BCi);
 		Ese = BCe ^ ((~BCi)&  BCo);
 		Esi = BCi ^ ((~BCo)&  BCu);
@@ -342,22 +394,22 @@ void keccak_permute(uint64_t* state)
 		BCu = Ebu ^ Egu^Eku^Emu^Esu;
 
 		/* thetaRhoPiChiIotaPrepareTheta */
-		Da = BCu ^ rotl64(BCe, 1);
-		De = BCa ^ rotl64(BCi, 1);
-		Di = BCe ^ rotl64(BCo, 1);
-		Do = BCi ^ rotl64(BCu, 1);
-		Du = BCo ^ rotl64(BCa, 1);
+		Da = BCu ^ qsc_intutils_rotl64(BCe, 1);
+		De = BCa ^ qsc_intutils_rotl64(BCi, 1);
+		Di = BCe ^ qsc_intutils_rotl64(BCo, 1);
+		Do = BCi ^ qsc_intutils_rotl64(BCu, 1);
+		Du = BCo ^ qsc_intutils_rotl64(BCa, 1);
 
 		Eba ^= Da;
 		BCa = Eba;
 		Ege ^= De;
-		BCe = rotl64(Ege, 44);
+		BCe = qsc_intutils_rotl64(Ege, 44);
 		Eki ^= Di;
-		BCi = rotl64(Eki, 43);
+		BCi = qsc_intutils_rotl64(Eki, 43);
 		Emo ^= Do;
-		BCo = rotl64(Emo, 21);
+		BCo = qsc_intutils_rotl64(Emo, 21);
 		Esu ^= Du;
-		BCu = rotl64(Esu, 14);
+		BCu = qsc_intutils_rotl64(Esu, 14);
 		Aba = BCa ^ ((~BCe)&  BCi);
 		Aba ^= KeccakF_RoundConstants[i + 1];
 		Abe = BCe ^ ((~BCi)&  BCo);
@@ -366,15 +418,15 @@ void keccak_permute(uint64_t* state)
 		Abu = BCu ^ ((~BCa)&  BCe);
 
 		Ebo ^= Do;
-		BCa = rotl64(Ebo, 28);
+		BCa = qsc_intutils_rotl64(Ebo, 28);
 		Egu ^= Du;
-		BCe = rotl64(Egu, 20);
+		BCe = qsc_intutils_rotl64(Egu, 20);
 		Eka ^= Da;
-		BCi = rotl64(Eka, 3);
+		BCi = qsc_intutils_rotl64(Eka, 3);
 		Eme ^= De;
-		BCo = rotl64(Eme, 45);
+		BCo = qsc_intutils_rotl64(Eme, 45);
 		Esi ^= Di;
-		BCu = rotl64(Esi, 61);
+		BCu = qsc_intutils_rotl64(Esi, 61);
 		Aga = BCa ^ ((~BCe)&  BCi);
 		Age = BCe ^ ((~BCi)&  BCo);
 		Agi = BCi ^ ((~BCo)&  BCu);
@@ -382,15 +434,15 @@ void keccak_permute(uint64_t* state)
 		Agu = BCu ^ ((~BCa)&  BCe);
 
 		Ebe ^= De;
-		BCa = rotl64(Ebe, 1);
+		BCa = qsc_intutils_rotl64(Ebe, 1);
 		Egi ^= Di;
-		BCe = rotl64(Egi, 6);
+		BCe = qsc_intutils_rotl64(Egi, 6);
 		Eko ^= Do;
-		BCi = rotl64(Eko, 25);
+		BCi = qsc_intutils_rotl64(Eko, 25);
 		Emu ^= Du;
-		BCo = rotl64(Emu, 8);
+		BCo = qsc_intutils_rotl64(Emu, 8);
 		Esa ^= Da;
-		BCu = rotl64(Esa, 18);
+		BCu = qsc_intutils_rotl64(Esa, 18);
 		Aka = BCa ^ ((~BCe)&  BCi);
 		Ake = BCe ^ ((~BCi)&  BCo);
 		Aki = BCi ^ ((~BCo)&  BCu);
@@ -398,15 +450,15 @@ void keccak_permute(uint64_t* state)
 		Aku = BCu ^ ((~BCa)&  BCe);
 
 		Ebu ^= Du;
-		BCa = rotl64(Ebu, 27);
+		BCa = qsc_intutils_rotl64(Ebu, 27);
 		Ega ^= Da;
-		BCe = rotl64(Ega, 36);
+		BCe = qsc_intutils_rotl64(Ega, 36);
 		Eke ^= De;
-		BCi = rotl64(Eke, 10);
+		BCi = qsc_intutils_rotl64(Eke, 10);
 		Emi ^= Di;
-		BCo = rotl64(Emi, 15);
+		BCo = qsc_intutils_rotl64(Emi, 15);
 		Eso ^= Do;
-		BCu = rotl64(Eso, 56);
+		BCu = qsc_intutils_rotl64(Eso, 56);
 		Ama = BCa ^ ((~BCe)&  BCi);
 		Ame = BCe ^ ((~BCi)&  BCo);
 		Ami = BCi ^ ((~BCo)&  BCu);
@@ -414,15 +466,15 @@ void keccak_permute(uint64_t* state)
 		Amu = BCu ^ ((~BCa)&  BCe);
 
 		Ebi ^= Di;
-		BCa = rotl64(Ebi, 62);
+		BCa = qsc_intutils_rotl64(Ebi, 62);
 		Ego ^= Do;
-		BCe = rotl64(Ego, 55);
+		BCe = qsc_intutils_rotl64(Ego, 55);
 		Eku ^= Du;
-		BCi = rotl64(Eku, 39);
+		BCi = qsc_intutils_rotl64(Eku, 39);
 		Ema ^= Da;
-		BCo = rotl64(Ema, 41);
+		BCo = qsc_intutils_rotl64(Ema, 41);
 		Ese ^= De;
-		BCu = rotl64(Ese, 2);
+		BCu = qsc_intutils_rotl64(Ese, 2);
 		Asa = BCa ^ ((~BCe)&  BCi);
 		Ase = BCe ^ ((~BCi)&  BCo);
 		Asi = BCi ^ ((~BCo)&  BCu);
@@ -460,7 +512,7 @@ void keccak_permute(uint64_t* state)
 
 #else
 
-void keccak_permute(uint64_t* state)
+void qsc_keccak_permute(uint64_t* state)
 {
 	uint64_t Aba;
 	uint64_t Abe;
@@ -555,21 +607,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x0000000000000001ULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -577,60 +629,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -642,21 +694,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x0000000000008082ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -664,60 +716,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -729,21 +781,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x800000000000808AULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -751,60 +803,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -816,21 +868,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x8000000080008000ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -838,60 +890,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -903,21 +955,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x000000000000808BULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -925,60 +977,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -990,21 +1042,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x0000000080000001ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -1012,60 +1064,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -1077,21 +1129,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x8000000080008081ULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -1099,60 +1151,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -1164,21 +1216,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x8000000000008009ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -1186,60 +1238,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -1251,21 +1303,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x000000000000008AULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -1273,60 +1325,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -1338,21 +1390,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x0000000000000088ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -1360,60 +1412,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -1425,21 +1477,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x0000000080008009ULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -1447,60 +1499,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -1512,21 +1564,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x000000008000000AULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -1534,60 +1586,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -1599,21 +1651,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x000000008000808BULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -1621,60 +1673,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -1686,21 +1738,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x800000000000008BULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -1708,60 +1760,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -1773,21 +1825,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x8000000000008089ULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -1795,60 +1847,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -1860,21 +1912,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x8000000000008003ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -1882,60 +1934,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -1947,21 +1999,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x8000000000008002ULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -1969,60 +2021,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -2034,21 +2086,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x8000000000000080ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -2056,60 +2108,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -2121,21 +2173,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x000000000000800AULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -2143,60 +2195,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -2208,21 +2260,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x800000008000000AULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -2230,60 +2282,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -2295,21 +2347,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x8000000080008081ULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -2317,60 +2369,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -2382,21 +2434,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x8000000000008080ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -2404,60 +2456,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -2469,21 +2521,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Abi ^ Agi ^ Aki ^ Ami ^ Asi;
 	Co = Abo ^ Ago ^ Ako ^ Amo ^ Aso;
 	Cu = Abu ^ Agu ^ Aku ^ Amu ^ Asu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Aba ^= Da;
 	Ca = Aba;
 	Age ^= De;
-	Ce = rotl64(Age, 44);
+	Ce = qsc_intutils_rotl64(Age, 44);
 	Aki ^= Di;
-	Ci = rotl64(Aki, 43);
+	Ci = qsc_intutils_rotl64(Aki, 43);
 	Amo ^= Do;
-	Co = rotl64(Amo, 21);
+	Co = qsc_intutils_rotl64(Amo, 21);
 	Asu ^= Du;
-	Cu = rotl64(Asu, 14);
+	Cu = qsc_intutils_rotl64(Asu, 14);
 	Eba = Ca ^ ((~Ce) & Ci);
 	Eba ^= 0x0000000080000001ULL;
 	Ebe = Ce ^ ((~Ci) & Co);
@@ -2491,60 +2543,60 @@ void keccak_permute(uint64_t* state)
 	Ebo = Co ^ ((~Cu) & Ca);
 	Ebu = Cu ^ ((~Ca) & Ce);
 	Abo ^= Do;
-	Ca = rotl64(Abo, 28);
+	Ca = qsc_intutils_rotl64(Abo, 28);
 	Agu ^= Du;
-	Ce = rotl64(Agu, 20);
+	Ce = qsc_intutils_rotl64(Agu, 20);
 	Aka ^= Da;
-	Ci = rotl64(Aka, 3);
+	Ci = qsc_intutils_rotl64(Aka, 3);
 	Ame ^= De;
-	Co = rotl64(Ame, 45);
+	Co = qsc_intutils_rotl64(Ame, 45);
 	Asi ^= Di;
-	Cu = rotl64(Asi, 61);
+	Cu = qsc_intutils_rotl64(Asi, 61);
 	Ega = Ca ^ ((~Ce) & Ci);
 	Ege = Ce ^ ((~Ci) & Co);
 	Egi = Ci ^ ((~Co) & Cu);
 	Ego = Co ^ ((~Cu) & Ca);
 	Egu = Cu ^ ((~Ca) & Ce);
 	Abe ^= De;
-	Ca = rotl64(Abe, 1);
+	Ca = qsc_intutils_rotl64(Abe, 1);
 	Agi ^= Di;
-	Ce = rotl64(Agi, 6);
+	Ce = qsc_intutils_rotl64(Agi, 6);
 	Ako ^= Do;
-	Ci = rotl64(Ako, 25);
+	Ci = qsc_intutils_rotl64(Ako, 25);
 	Amu ^= Du;
-	Co = rotl64(Amu, 8);
+	Co = qsc_intutils_rotl64(Amu, 8);
 	Asa ^= Da;
-	Cu = rotl64(Asa, 18);
+	Cu = qsc_intutils_rotl64(Asa, 18);
 	Eka = Ca ^ ((~Ce) & Ci);
 	Eke = Ce ^ ((~Ci) & Co);
 	Eki = Ci ^ ((~Co) & Cu);
 	Eko = Co ^ ((~Cu) & Ca);
 	Eku = Cu ^ ((~Ca) & Ce);
 	Abu ^= Du;
-	Ca = rotl64(Abu, 27);
+	Ca = qsc_intutils_rotl64(Abu, 27);
 	Aga ^= Da;
-	Ce = rotl64(Aga, 36);
+	Ce = qsc_intutils_rotl64(Aga, 36);
 	Ake ^= De;
-	Ci = rotl64(Ake, 10);
+	Ci = qsc_intutils_rotl64(Ake, 10);
 	Ami ^= Di;
-	Co = rotl64(Ami, 15);
+	Co = qsc_intutils_rotl64(Ami, 15);
 	Aso ^= Do;
-	Cu = rotl64(Aso, 56);
+	Cu = qsc_intutils_rotl64(Aso, 56);
 	Ema = Ca ^ ((~Ce) & Ci);
 	Eme = Ce ^ ((~Ci) & Co);
 	Emi = Ci ^ ((~Co) & Cu);
 	Emo = Co ^ ((~Cu) & Ca);
 	Emu = Cu ^ ((~Ca) & Ce);
 	Abi ^= Di;
-	Ca = rotl64(Abi, 62);
+	Ca = qsc_intutils_rotl64(Abi, 62);
 	Ago ^= Do;
-	Ce = rotl64(Ago, 55);
+	Ce = qsc_intutils_rotl64(Ago, 55);
 	Aku ^= Du;
-	Ci = rotl64(Aku, 39);
+	Ci = qsc_intutils_rotl64(Aku, 39);
 	Ama ^= Da;
-	Co = rotl64(Ama, 41);
+	Co = qsc_intutils_rotl64(Ama, 41);
 	Ase ^= De;
-	Cu = rotl64(Ase, 2);
+	Cu = qsc_intutils_rotl64(Ase, 2);
 	Esa = Ca ^ ((~Ce) & Ci);
 	Ese = Ce ^ ((~Ci) & Co);
 	Esi = Ci ^ ((~Co) & Cu);
@@ -2556,21 +2608,21 @@ void keccak_permute(uint64_t* state)
 	Ci = Ebi ^ Egi ^ Eki ^ Emi ^ Esi;
 	Co = Ebo ^ Ego ^ Eko ^ Emo ^ Eso;
 	Cu = Ebu ^ Egu ^ Eku ^ Emu ^ Esu;
-	Da = Cu ^ rotl64(Ce, 1);
-	De = Ca ^ rotl64(Ci, 1);
-	Di = Ce ^ rotl64(Co, 1);
-	Do = Ci ^ rotl64(Cu, 1);
-	Du = Co ^ rotl64(Ca, 1);
+	Da = Cu ^ qsc_intutils_rotl64(Ce, 1);
+	De = Ca ^ qsc_intutils_rotl64(Ci, 1);
+	Di = Ce ^ qsc_intutils_rotl64(Co, 1);
+	Do = Ci ^ qsc_intutils_rotl64(Cu, 1);
+	Du = Co ^ qsc_intutils_rotl64(Ca, 1);
 	Eba ^= Da;
 	Ca = Eba;
 	Ege ^= De;
-	Ce = rotl64(Ege, 44);
+	Ce = qsc_intutils_rotl64(Ege, 44);
 	Eki ^= Di;
-	Ci = rotl64(Eki, 43);
+	Ci = qsc_intutils_rotl64(Eki, 43);
 	Emo ^= Do;
-	Co = rotl64(Emo, 21);
+	Co = qsc_intutils_rotl64(Emo, 21);
 	Esu ^= Du;
-	Cu = rotl64(Esu, 14);
+	Cu = qsc_intutils_rotl64(Esu, 14);
 	Aba = Ca ^ ((~Ce) & Ci);
 	Aba ^= 0x8000000080008008ULL;
 	Abe = Ce ^ ((~Ci) & Co);
@@ -2578,60 +2630,60 @@ void keccak_permute(uint64_t* state)
 	Abo = Co ^ ((~Cu) & Ca);
 	Abu = Cu ^ ((~Ca) & Ce);
 	Ebo ^= Do;
-	Ca = rotl64(Ebo, 28);
+	Ca = qsc_intutils_rotl64(Ebo, 28);
 	Egu ^= Du;
-	Ce = rotl64(Egu, 20);
+	Ce = qsc_intutils_rotl64(Egu, 20);
 	Eka ^= Da;
-	Ci = rotl64(Eka, 3);
+	Ci = qsc_intutils_rotl64(Eka, 3);
 	Eme ^= De;
-	Co = rotl64(Eme, 45);
+	Co = qsc_intutils_rotl64(Eme, 45);
 	Esi ^= Di;
-	Cu = rotl64(Esi, 61);
+	Cu = qsc_intutils_rotl64(Esi, 61);
 	Aga = Ca ^ ((~Ce) & Ci);
 	Age = Ce ^ ((~Ci) & Co);
 	Agi = Ci ^ ((~Co) & Cu);
 	Ago = Co ^ ((~Cu) & Ca);
 	Agu = Cu ^ ((~Ca) & Ce);
 	Ebe ^= De;
-	Ca = rotl64(Ebe, 1);
+	Ca = qsc_intutils_rotl64(Ebe, 1);
 	Egi ^= Di;
-	Ce = rotl64(Egi, 6);
+	Ce = qsc_intutils_rotl64(Egi, 6);
 	Eko ^= Do;
-	Ci = rotl64(Eko, 25);
+	Ci = qsc_intutils_rotl64(Eko, 25);
 	Emu ^= Du;
-	Co = rotl64(Emu, 8);
+	Co = qsc_intutils_rotl64(Emu, 8);
 	Esa ^= Da;
-	Cu = rotl64(Esa, 18);
+	Cu = qsc_intutils_rotl64(Esa, 18);
 	Aka = Ca ^ ((~Ce) & Ci);
 	Ake = Ce ^ ((~Ci) & Co);
 	Aki = Ci ^ ((~Co) & Cu);
 	Ako = Co ^ ((~Cu) & Ca);
 	Aku = Cu ^ ((~Ca) & Ce);
 	Ebu ^= Du;
-	Ca = rotl64(Ebu, 27);
+	Ca = qsc_intutils_rotl64(Ebu, 27);
 	Ega ^= Da;
-	Ce = rotl64(Ega, 36);
+	Ce = qsc_intutils_rotl64(Ega, 36);
 	Eke ^= De;
-	Ci = rotl64(Eke, 10);
+	Ci = qsc_intutils_rotl64(Eke, 10);
 	Emi ^= Di;
-	Co = rotl64(Emi, 15);
+	Co = qsc_intutils_rotl64(Emi, 15);
 	Eso ^= Do;
-	Cu = rotl64(Eso, 56);
+	Cu = qsc_intutils_rotl64(Eso, 56);
 	Ama = Ca ^ ((~Ce) & Ci);
 	Ame = Ce ^ ((~Ci) & Co);
 	Ami = Ci ^ ((~Co) & Cu);
 	Amo = Co ^ ((~Cu) & Ca);
 	Amu = Cu ^ ((~Ca) & Ce);
 	Ebi ^= Di;
-	Ca = rotl64(Ebi, 62);
+	Ca = qsc_intutils_rotl64(Ebi, 62);
 	Ego ^= Do;
-	Ce = rotl64(Ego, 55);
+	Ce = qsc_intutils_rotl64(Ego, 55);
 	Eku ^= Du;
-	Ci = rotl64(Eku, 39);
+	Ci = qsc_intutils_rotl64(Eku, 39);
 	Ema ^= Da;
-	Co = rotl64(Ema, 41);
+	Co = qsc_intutils_rotl64(Ema, 41);
 	Ese ^= De;
-	Cu = rotl64(Ese, 2);
+	Cu = qsc_intutils_rotl64(Ese, 2);
 	Asa = Ca ^ ((~Ce) & Ci);
 	Ase = Ce ^ ((~Ci) & Co);
 	Asi = Ci ^ ((~Co) & Cu);
@@ -2667,1077 +2719,506 @@ void keccak_permute(uint64_t* state)
 
 #endif
 
+/* common */
+
+QSC_SYSTEM_OPTIMIZE_IGNORE
+void qsc_keccak_dispose(qsc_keccak_state* ctx)
+{
+	if (ctx != NULL)
+	{
+		qsc_memutils_clear((uint8_t*)ctx->state, sizeof(ctx->state));
+		qsc_memutils_clear(ctx->buffer, sizeof(ctx->buffer));
+		ctx->position = 0;
+	}
+}
+QSC_SYSTEM_OPTIMIZE_RESUME
+
 /* sha3 */
 
-void sha3_compute256(uint8_t* output, const uint8_t* message, size_t msglen)
+void qsc_sha3_compute256(uint8_t* output, const uint8_t* message, size_t msglen)
 {
-	keccak_state state;
-	uint8_t hash[SHA3_256_RATE] = { 0 };
-	size_t i;
+	assert(output != NULL);
+	assert(message != NULL);
 
-	clear64(state.state, SHA3_STATE_SIZE);
-	keccak_absorb(state.state, SHA3_256_RATE, message, msglen, SHA3_DOMAIN_ID);
-	keccak_squeezeblocks(state.state, hash, 1, SHA3_256_RATE);
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_256_RATE] = { 0 };
 
-	for (i = 0; i < SHA3_256_HASH; ++i)
-	{
-		output[i] = hash[i];
-	}
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	keccak_absorb(ctx.state, keccak_rate_256, message, msglen, KECCAK_SHA3_DOMAIN_ID);
+	keccak_squeezeblocks(ctx.state, hash, 1, keccak_rate_256);
+	qsc_memutils_copy(output, hash, QSC_SHA3_256_HASH_SIZE);
+	qsc_keccak_dispose(&ctx);
 }
 
-void sha3_compute512(uint8_t* output, const uint8_t* message, size_t msglen)
+void qsc_sha3_compute512(uint8_t* output, const uint8_t* message, size_t msglen)
 {
-	keccak_state state;
-	uint8_t hash[SHA3_512_RATE];
-	size_t i;
+	assert(output != NULL);
+	assert(message != NULL);
 
-	clear64(state.state, SHA3_STATE_SIZE);
-	keccak_absorb(state.state, SHA3_512_RATE, message, msglen, SHA3_DOMAIN_ID);
-	keccak_squeezeblocks(state.state, hash, 1, SHA3_512_RATE);
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_512_RATE] = { 0 };
 
-	for (i = 0; i < 64; ++i)
-	{
-		output[i] = hash[i];
-	}
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	keccak_absorb(ctx.state, keccak_rate_512, message, msglen, KECCAK_SHA3_DOMAIN_ID);
+	keccak_squeezeblocks(ctx.state, hash, 1, keccak_rate_512);
+	qsc_memutils_copy(output, hash, QSC_SHA3_512_HASH_SIZE);
+	qsc_keccak_dispose(&ctx);
 }
 
-void sha3_blockupdate(keccak_state* state, size_t rate, const uint8_t* message, size_t nblocks)
+void qsc_sha3_finalize(qsc_keccak_state* ctx, keccak_rate rate, uint8_t* output)
 {
-	size_t i;
+	assert(ctx != NULL);
+	assert(output != NULL);
 
-	while (nblocks > 0)
+	size_t hlen;
+
+	hlen = (((QSC_KECCAK_STATE_SIZE * sizeof(uint64_t)) - rate) / 2);
+	qsc_memutils_clear(ctx->buffer + ctx->position, sizeof(ctx->buffer) - ctx->position);
+	ctx->buffer[ctx->position] = KECCAK_SHA3_DOMAIN_ID;
+	ctx->buffer[rate - 1] |= 128U;
+	keccak_fast_absorb(ctx->state, ctx->buffer, rate);
+	qsc_keccak_permute(ctx->state);
+
+#if defined(QSC_SYSTEM_IS_LITTLE_ENDIAN)
+	qsc_memutils_copy(output, (uint8_t*)ctx->state, hlen);
+#else
+
+	for (size_t i = 0; i < hlen / sizeof(uint64_t); ++i)
 	{
-		for (i = 0; i < rate / 8; ++i)
-		{
-			state->state[i] ^= le8to64(message + (sizeof(uint64_t) * i));
-		}
-
-		keccak_permute(state->state);
-		message += rate;
-		--nblocks;
+		qsc_intutils_le64to8(output, ctx->state[i]);
+		output += sizeof(uint64_t);
 	}
+#endif
+
+	qsc_keccak_dispose(ctx);
 }
 
-void sha3_finalize(keccak_state* state, size_t rate, const uint8_t* message, size_t msglen, uint8_t* output)
+void qsc_sha3_initialize(qsc_keccak_state* ctx)
 {
-	uint8_t msg[SHA3_STATE_SIZE * sizeof(uint64_t)] = { 0 };
-	size_t i;
-
-	if (msglen >= rate)
-	{
-		sha3_blockupdate(state, rate, message, msglen / rate);
-		message += (msglen / rate) * rate;
-		msglen = (msglen % rate);
-	}
-
-	for (i = 0; i < msglen; ++i)
-	{
-		msg[i] = message[i];
-	}
-
-	msg[msglen] = SHA3_DOMAIN_ID;
-	msg[rate - 1] |= 128U;
-
-	for (i = 0; i < rate / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(msg + (sizeof(uint64_t) * i));
-	}
-
-	keccak_permute(state->state);
-	msglen = ((((SHA3_STATE_SIZE * sizeof(uint64_t)) - rate) / 2) / 8);
-
-	for (i = 0; i < msglen; ++i)
-	{
-		le64to8(output, state->state[i]);
-		output += 8;
-	}
+	qsc_keccak_dispose(ctx);
 }
 
-void sha3_initialize(keccak_state* state)
+void qsc_sha3_update(qsc_keccak_state* ctx, keccak_rate rate, const uint8_t* message, size_t msglen)
 {
-	clear64(state->state, SHA3_STATE_SIZE);
+	keccak_update(ctx, rate, message, msglen);
 }
 
 /* shake */
 
-void shake128_compute(uint8_t* output, size_t outputlen, const uint8_t* key, size_t keylen)
+void qsc_shake128_compute(uint8_t* output, size_t outlen, const uint8_t* key, size_t keylen)
 {
-	const size_t nblocks = outputlen / SHAKE_128_RATE;
-	keccak_state state;
-	uint8_t hash[SHAKE_128_RATE] = { 0 };
-	size_t i;
+	assert(output != NULL);
+	assert(key != NULL);
 
-	clear64(state.state, SHA3_STATE_SIZE);
-	shake128_initialize(&state, key, keylen);
-	shake128_squeezeblocks(&state, output, nblocks);
+	const size_t nblocks = outlen / QSC_KECCAK_128_RATE;
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_128_RATE] = { 0 };
 
-	output += (nblocks * SHAKE_128_RATE);
-	outputlen -= (nblocks * SHAKE_128_RATE);
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	qsc_shake_initialize(&ctx, keccak_rate_128, key, keylen);
+	qsc_shake_squeezeblocks(&ctx, keccak_rate_128, output, nblocks);
+	output += (nblocks * QSC_KECCAK_128_RATE);
+	outlen -= (nblocks * QSC_KECCAK_128_RATE);
 
-	if (outputlen != 0)
+	if (outlen != 0)
 	{
-		shake128_squeezeblocks(&state, hash, 1);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = hash[i];
-		}
+		qsc_shake_squeezeblocks(&ctx, keccak_rate_128, hash, 1);
+		qsc_memutils_copy(output, hash, outlen);
 	}
+
+	qsc_keccak_dispose(&ctx);
 }
 
-void shake128_initialize(keccak_state* state, const uint8_t* key, size_t keylen)
+void qsc_shake256_compute(uint8_t* output, size_t outlen, const uint8_t* key, size_t keylen)
 {
-	keccak_absorb(state->state, SHAKE_128_RATE, key, keylen, SHAKE_DOMAIN_ID);
-}
+	assert(output != NULL);
+	assert(key != NULL);
 
-void shake128_squeezeblocks(keccak_state* state, uint8_t* output, size_t nblocks)
-{
-	keccak_squeezeblocks(state->state, output, nblocks, SHAKE_128_RATE);
-}
+	const size_t nblocks = outlen / QSC_KECCAK_256_RATE;
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_256_RATE] = { 0 };
 
-void shake256_compute(uint8_t* output, size_t outputlen, const uint8_t* key, size_t keylen)
-{
-	const size_t nblocks = outputlen / SHAKE_256_RATE;
-	keccak_state state;
-	uint8_t hash[SHAKE_256_RATE] = { 0 };
-	size_t i;
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	qsc_shake_initialize(&ctx, keccak_rate_256, key, keylen);
+	qsc_shake_squeezeblocks(&ctx, keccak_rate_256, output, nblocks);
+	output += (nblocks * QSC_KECCAK_256_RATE);
+	outlen -= (nblocks * QSC_KECCAK_256_RATE);
 
-	clear64(state.state, SHA3_STATE_SIZE);
-	shake256_initialize(&state, key, keylen);
-	shake256_squeezeblocks(&state, output, nblocks);
-
-	output += (nblocks * SHAKE_256_RATE);
-	outputlen -= (nblocks * SHAKE_256_RATE);
-
-	if (outputlen != 0)
+	if (outlen != 0)
 	{
-		shake256_squeezeblocks(&state, hash, 1);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = hash[i];
-		}
+		qsc_shake_squeezeblocks(&ctx, keccak_rate_256, hash, 1);
+		qsc_memutils_copy(output, hash, outlen);
 	}
+
+	qsc_keccak_dispose(&ctx);
 }
 
-void shake256_initialize(keccak_state* state, const uint8_t* key, size_t keylen)
+void qsc_shake512_compute(uint8_t* output, size_t outlen, const uint8_t* key, size_t keylen)
 {
-	keccak_absorb(state->state, SHAKE_256_RATE, key, keylen, SHAKE_DOMAIN_ID);
-}
+	assert(output != NULL);
+	assert(key != NULL);
 
-void shake256_squeezeblocks(keccak_state* state, uint8_t* output, size_t nblocks)
-{
-	keccak_squeezeblocks(state->state, output, nblocks, SHAKE_256_RATE);
-}
+	const size_t nblocks = outlen / QSC_KECCAK_512_RATE;
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_512_RATE] = { 0 };
 
-void shake512_compute(uint8_t* output, size_t outputlen, const uint8_t* key, size_t keylen)
-{
-	const size_t nblocks = outputlen / SHAKE_512_RATE;
-	keccak_state state;
-	uint8_t hash[SHAKE_512_RATE] = { 0 };
-	size_t i;
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	qsc_shake_initialize(&ctx, keccak_rate_512, key, keylen);
+	qsc_shake_squeezeblocks(&ctx, keccak_rate_512, output, nblocks);
+	output += (nblocks * QSC_KECCAK_512_RATE);
+	outlen -= (nblocks * QSC_KECCAK_512_RATE);
 
-	clear64(state.state, SHA3_STATE_SIZE);
-	shake512_initialize(&state, key, keylen);
-	shake512_squeezeblocks(&state, output, nblocks);
-
-	output += (nblocks * SHAKE_512_RATE);
-	outputlen -= (nblocks * SHAKE_512_RATE);
-
-	if (outputlen != 0)
+	if (outlen != 0)
 	{
-		shake512_squeezeblocks(&state, hash, 1);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = hash[i];
-		}
+		qsc_shake_squeezeblocks(&ctx, keccak_rate_512, hash, 1);
+		qsc_memutils_copy(output, hash, outlen);
 	}
+
+	qsc_keccak_dispose(&ctx);
 }
 
-void shake512_initialize(keccak_state* state, const uint8_t* key, size_t keylen)
+void qsc_shake_initialize(qsc_keccak_state* ctx, keccak_rate rate, const uint8_t* key, size_t keylen)
 {
-	keccak_absorb(state->state, SHAKE_512_RATE, key, keylen, SHAKE_DOMAIN_ID);
+	assert(ctx != NULL);
+	assert(key != NULL);
+
+	keccak_absorb(ctx->state, rate, key, keylen, KECCAK_SHAKE_DOMAIN_ID);
 }
 
-void shake512_squeezeblocks(keccak_state* state, uint8_t* output, size_t nblocks)
+void qsc_shake_squeezeblocks(qsc_keccak_state* ctx, keccak_rate rate, uint8_t* output, size_t nblocks)
 {
-	keccak_squeezeblocks(state->state, output, nblocks, SHAKE_512_RATE);
+	assert(ctx != NULL);
+	assert(output != NULL);
+
+	keccak_squeezeblocks(ctx->state, output, nblocks, rate);
 }
 
 /* cshake */
 
-void cshake128_compute(uint8_t* output, size_t outputlen, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t customlen)
+void qsc_cshake128_compute(uint8_t* output, size_t outlen, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t custlen)
 {
-	const size_t nblocks = outputlen / CSHAKE_128_RATE;
-	keccak_state state;
-	uint8_t hash[CSHAKE_128_RATE] = { 0 };
-	size_t i;
+	assert(output != NULL);
+	assert(key != NULL);
 
-	clear64(state.state, SHA3_STATE_SIZE);
+	const size_t nblocks = outlen / QSC_KECCAK_128_RATE;
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_128_RATE] = { 0 };
 
-	if (customlen + namelen != 0)
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+
+	if (custlen + namelen != 0)
 	{
-		cshake128_initialize(&state, key, keylen, name, namelen, custom, customlen);
+		qsc_cshake_initialize(&ctx, keccak_rate_128, key, keylen, name, namelen, custom, custlen);
 	}
 	else
 	{
-		shake128_initialize(&state, key, keylen);
+		qsc_shake_initialize(&ctx, keccak_rate_128, key, keylen);
 	}
 
-	cshake128_squeezeblocks(&state, output, nblocks);
+	qsc_cshake_squeezeblocks(&ctx, keccak_rate_128, output, nblocks);
+	output += (nblocks * QSC_KECCAK_128_RATE);
+	outlen -= (nblocks * QSC_KECCAK_128_RATE);
 
-	output += (nblocks * CSHAKE_128_RATE);
-	outputlen -= (nblocks * CSHAKE_128_RATE);
-
-	if (outputlen != 0)
+	if (outlen != 0)
 	{
-		cshake128_squeezeblocks(&state, hash, 1);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = hash[i];
-		}
+		qsc_cshake_squeezeblocks(&ctx, keccak_rate_128, hash, 1);
+		qsc_memutils_copy(output, hash, outlen);
 	}
+
+	qsc_keccak_dispose(&ctx);
 }
 
-void cshake128_initialize(keccak_state* state, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t customlen)
+void qsc_cshake256_compute(uint8_t* output, size_t outlen, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t custlen)
 {
-	uint8_t pad[SHAKE_STATE_SIZE * sizeof(uint64_t)];
-	size_t i;
-	size_t j;
-	size_t offset;
+	assert(output != NULL);
+	assert(key != NULL);
 
-	offset = left_encode(pad, CSHAKE_128_RATE);
-	offset += left_encode(pad + offset, namelen * 8);
+	const size_t nblocks = outlen / QSC_KECCAK_256_RATE;
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_256_RATE] = { 0 };
+
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+
+	if (custlen + namelen != 0)
+	{
+		qsc_cshake_initialize(&ctx, keccak_rate_256, key, keylen, name, namelen, custom, custlen);
+	}
+	else
+	{
+		qsc_shake_initialize(&ctx, keccak_rate_256, key, keylen);
+	}
+
+	qsc_cshake_squeezeblocks(&ctx, keccak_rate_256, output, nblocks);
+
+	output += (nblocks * QSC_KECCAK_256_RATE);
+	outlen -= (nblocks * QSC_KECCAK_256_RATE);
+
+	if (outlen != 0)
+	{
+		qsc_cshake_squeezeblocks(&ctx, keccak_rate_256, hash, 1);
+		qsc_memutils_copy(output, hash, outlen);
+	}
+
+	qsc_keccak_dispose(&ctx);
+}
+
+void qsc_cshake512_compute(uint8_t* output, size_t outlen, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t custlen)
+{
+	assert(output != NULL);
+	assert(key != NULL);
+
+	const size_t nblocks = outlen / QSC_KECCAK_512_RATE;
+	qsc_keccak_state ctx;
+	uint8_t hash[QSC_KECCAK_512_RATE] = { 0 };
+
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+
+	if (custlen + namelen != 0)
+	{
+		qsc_cshake_initialize(&ctx, keccak_rate_512, key, keylen, name, namelen, custom, custlen);
+	}
+	else
+	{
+		qsc_shake_initialize(&ctx, keccak_rate_512, key, keylen);
+	}
+
+	qsc_cshake_squeezeblocks(&ctx, keccak_rate_512, output, nblocks);
+	output += (nblocks * QSC_KECCAK_512_RATE);
+	outlen -= (nblocks * QSC_KECCAK_512_RATE);
+
+	if (outlen != 0)
+	{
+		qsc_cshake_squeezeblocks(&ctx, keccak_rate_512, hash, 1);
+		qsc_memutils_copy(output, hash, outlen);
+	}
+
+	qsc_keccak_dispose(&ctx);
+}
+
+void qsc_cshake_initialize(qsc_keccak_state* ctx, keccak_rate rate, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t custlen)
+{
+	assert(ctx != NULL);
+	assert(key != NULL);
+
+	uint8_t pad[KECCAK_STATE_BYTE_SIZE] = { 0 };
+	size_t i;
+	size_t oft;
+
+	oft = keccak_left_encode(pad, rate);
+	oft += keccak_left_encode(pad + oft, namelen * 8);
 
 	if (namelen != 0)
 	{
 		for (i = 0; i < namelen; ++i)
 		{
-			if (offset == CSHAKE_128_RATE)
+			if (oft == rate)
 			{
-				for (j = 0; j < CSHAKE_128_RATE / sizeof(uint64_t); ++j)
-				{
-					state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-				}
-
-				keccak_permute(state->state);
-				offset = 0;
+				keccak_fast_absorb(ctx->state, pad, rate);
+				qsc_keccak_permute(ctx->state);
+				oft = 0;
 			}
 
-			pad[offset] = name[i];
-			++offset;
+			pad[oft] = name[i];
+			++oft;
 		}
 	}
 
-	offset += left_encode(pad + offset, customlen * 8);
+	oft += keccak_left_encode(pad + oft, custlen * 8);
 
-	if (customlen != 0)
+	if (custlen != 0)
 	{
-		for (i = 0; i < customlen; ++i)
+		for (i = 0; i < custlen; ++i)
 		{
-			if (offset == CSHAKE_128_RATE)
+			if (oft == rate)
 			{
-				for (j = 0; j < CSHAKE_128_RATE / sizeof(uint64_t); ++j)
-				{
-					state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-				}
-
-				keccak_permute(state->state);
-				offset = 0;
+				keccak_fast_absorb(ctx->state, pad, rate);
+				qsc_keccak_permute(ctx->state);
+				oft = 0;
 			}
 
-			pad[offset] = custom[i];
-			++offset;
+			pad[oft] = custom[i];
+			++oft;
 		}
 	}
 
-	clear8(pad + offset, CSHAKE_128_RATE - offset);
-
-	for (i = 0; i < CSHAKE_128_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	/* transform the domain string */
-	keccak_permute(state->state);
+	qsc_memutils_clear(pad + oft, rate - oft);
+	keccak_fast_absorb(ctx->state, pad, rate);
+	qsc_keccak_permute(ctx->state);
 
 	/* initialize the key */
-	cshake128_update(state, key, keylen);
+	keccak_absorb(ctx->state, rate, key, keylen, KECCAK_CSHAKE_DOMAIN_ID);
 }
 
-void cshake128_squeezeblocks(keccak_state* state, uint8_t* output, size_t nblocks)
+void qsc_cshake_squeezeblocks(qsc_keccak_state* ctx, keccak_rate rate, uint8_t* output, size_t nblocks)
 {
-	keccak_squeezeblocks(state->state, output, nblocks, CSHAKE_128_RATE);
+	assert(ctx != NULL);
+	assert(output != NULL);
+
+	keccak_squeezeblocks(ctx->state, output, nblocks, (size_t)rate);
 }
 
-void cshake128_update(keccak_state* state, const uint8_t* key, size_t keylen)
+void qsc_cshake_update(qsc_keccak_state* ctx, keccak_rate rate, const uint8_t* key, size_t keylen)
 {
-	keccak_absorb(state->state, CSHAKE_128_RATE, key, keylen, CSHAKE_DOMAIN_ID);
-}
-
-void cshake256_compute(uint8_t* output, size_t outputlen, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t customlen)
-{
-	const size_t nblocks = outputlen / CSHAKE_256_RATE;
-	keccak_state kstate;
-	uint8_t hash[CSHAKE_256_RATE] = { 0 };
-	size_t i;
-
-	clear64(kstate.state, SHA3_STATE_SIZE);
-
-	if (customlen + namelen != 0)
+	while (keylen >= (size_t)rate)
 	{
-		cshake256_initialize(&kstate, key, keylen, name, namelen, custom, customlen);
-	}
-	else
-	{
-		shake256_initialize(&kstate, key, keylen);
+		keccak_fast_absorb(ctx->state, key, keylen);
+		qsc_keccak_permute(ctx->state);
+		keylen -= rate;
+		key += rate;
 	}
 
-	cshake256_squeezeblocks(&kstate, output, nblocks);
-
-	output += (nblocks * CSHAKE_256_RATE);
-	outputlen -= (nblocks * CSHAKE_256_RATE);
-
-	if (outputlen != 0)
+	if (keylen != 0)
 	{
-		cshake256_squeezeblocks(&kstate, hash, 1);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = hash[i];
-		}
+		keccak_fast_absorb(ctx->state, key, keylen);
+		qsc_keccak_permute(ctx->state);
 	}
-}
-
-void cshake256_initialize(keccak_state* state, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t customlen)
-{
-	uint8_t pad[SHAKE_STATE_SIZE * sizeof(uint64_t)];
-	size_t i;
-	size_t j;
-	size_t offset;
-
-	offset = left_encode(pad, CSHAKE_256_RATE);
-	offset += left_encode(pad + offset, namelen * 8);
-
-	if (namelen != 0)
-	{
-		for (i = 0; i < namelen; ++i)
-		{
-			if (offset == CSHAKE_256_RATE)
-			{
-				for (j = 0; j < CSHAKE_256_RATE / sizeof(uint64_t); ++j)
-				{
-					state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-				}
-
-				keccak_permute(state->state);
-				offset = 0;
-			}
-
-			pad[offset] = name[i];
-			++offset;
-		}
-	}
-
-	offset += left_encode(pad + offset, customlen * 8);
-
-	if (customlen != 0)
-	{
-		for (i = 0; i < customlen; ++i)
-		{
-			if (offset == CSHAKE_256_RATE)
-			{
-				for (j = 0; j < CSHAKE_256_RATE / sizeof(uint64_t); ++j)
-				{
-					state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-				}
-
-				keccak_permute(state->state);
-				offset = 0;
-			}
-
-			pad[offset] = custom[i];
-			++offset;
-		}
-	}
-
-	clear8(pad + offset, CSHAKE_256_RATE - offset);
-
-	for (i = 0; i < CSHAKE_256_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	/* transform the domain string */
-	keccak_permute(state->state);
-
-	/* initialize the key */
-	cshake256_update(state, key, keylen);
-}
-
-void cshake256_squeezeblocks(keccak_state* state, uint8_t* output, size_t nblocks)
-{
-	keccak_squeezeblocks(state->state, output, nblocks, CSHAKE_256_RATE);
-}
-
-void cshake256_update(keccak_state* state, const uint8_t* key, size_t keylen)
-{
-	keccak_absorb(state->state, CSHAKE_256_RATE, key, keylen, CSHAKE_DOMAIN_ID);
-}
-
-void cshake512_compute(uint8_t* output, size_t outputlen, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t customlen)
-{
-	const size_t nblocks = outputlen / CSHAKE_512_RATE;
-	keccak_state state;
-	uint8_t hash[CSHAKE_512_RATE] = { 0 };
-	size_t i;
-
-	clear64(state.state, SHA3_STATE_SIZE);
-
-	if (customlen + namelen != 0)
-	{
-		cshake512_initialize(&state, key, keylen, name, namelen, custom, customlen);
-	}
-	else
-	{
-		shake512_initialize(&state, key, keylen);
-	}
-
-	cshake512_squeezeblocks(&state, output, nblocks);
-
-	output += (nblocks * CSHAKE_512_RATE);
-	outputlen -= (nblocks * CSHAKE_512_RATE);
-
-	if (outputlen != 0)
-	{
-		cshake512_squeezeblocks(&state, hash, 1);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = hash[i];
-		}
-	}
-}
-
-void cshake512_initialize(keccak_state* state, const uint8_t* key, size_t keylen, const uint8_t* name, size_t namelen, const uint8_t* custom, size_t customlen)
-{
-	uint8_t pad[SHAKE_STATE_SIZE * sizeof(uint64_t)];
-	size_t i;
-	size_t j;
-	size_t offset;
-
-	offset = left_encode(pad, CSHAKE_512_RATE);
-	offset += left_encode(pad + offset, namelen * 8);
-
-	if (namelen != 0)
-	{
-		for (i = 0; i < namelen; ++i)
-		{
-			if (offset == CSHAKE_512_RATE)
-			{
-				for (j = 0; j < CSHAKE_512_RATE / sizeof(uint64_t); ++j)
-				{
-					state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-				}
-
-				keccak_permute(state->state);
-				offset = 0;
-			}
-
-			pad[offset] = name[i];
-			++offset;
-		}
-	}
-
-	offset += left_encode(pad + offset, customlen * 8);
-
-	if (customlen != 0)
-	{
-		for (i = 0; i < customlen; ++i)
-		{
-			if (offset == CSHAKE_512_RATE)
-			{
-				for (j = 0; j < CSHAKE_512_RATE / sizeof(uint64_t); ++j)
-				{
-					state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-				}
-
-				keccak_permute(state->state);
-				offset = 0;
-			}
-
-			pad[offset] = custom[i];
-			++offset;
-		}
-	}
-
-	clear8(pad + offset, CSHAKE_512_RATE - offset);
-
-	for (i = 0; i < CSHAKE_512_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	/* transform the domain string */
-	keccak_permute(state->state);
-
-	/* initialize the key */
-	cshake512_update(state, key, keylen);
-}
-
-void cshake512_squeezeblocks(keccak_state* state, uint8_t* output, size_t nblocks)
-{
-	keccak_squeezeblocks(state->state, output, nblocks, CSHAKE_512_RATE);
-}
-
-void cshake512_update(keccak_state* state, const uint8_t* key, size_t keylen)
-{
-	keccak_absorb(state->state, CSHAKE_512_RATE, key, keylen, CSHAKE_DOMAIN_ID);
 }
 
 /* kmac */
 
-void kmac128_compute(uint8_t* output, size_t outputlen, const uint8_t* message, size_t msglen, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t customlen, const uint8_t* name, size_t namelen)
+void qsc_kmac128_compute(uint8_t* output, size_t outlen, const uint8_t* message, size_t msglen, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t custlen)
 {
-	keccak_state state;
+	assert(output != NULL);
+	assert(message != NULL);
+	assert(key != NULL);
 
-	clear64(state.state, KMAC_STATE_SIZE);
-	kmac128_initialize(&state, key, keylen, custom, customlen, name, namelen);
+	qsc_keccak_state ctx;
 
-	if (msglen >= KMAC_128_RATE)
-	{
-		const size_t rndlen = (msglen / KMAC_128_RATE) * KMAC_128_RATE;
-		kmac128_blockupdate(&state, message, rndlen / KMAC_128_RATE);
-		msglen -= rndlen;
-		message += rndlen;
-	}
-
-	kmac128_finalize(&state, output, outputlen, message, msglen);
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	qsc_kmac_initialize(&ctx, keccak_rate_128, key, keylen, custom, custlen);
+	qsc_kmac_update(&ctx, keccak_rate_128, message, msglen);
+	qsc_kmac_finalize(&ctx, keccak_rate_128, output, outlen);
 }
 
-void kmac128_blockupdate(keccak_state* state, const uint8_t* message, size_t nblocks)
+void qsc_kmac256_compute(uint8_t* output, size_t outlen, const uint8_t* message, size_t msglen, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t custlen)
 {
-	size_t i;
+	assert(output != NULL);
+	assert(message != NULL);
+	assert(key != NULL);
 
-	while (nblocks > 0)
-	{
-		for (i = 0; i < KMAC_128_RATE / sizeof(uint64_t); ++i)
-		{
-			state->state[i] ^= le8to64(message + (sizeof(uint64_t) * i));
-		}
+	qsc_keccak_state ctx;
 
-		keccak_permute(state->state);
-
-		--nblocks;
-		message += KMAC_128_RATE;
-	}
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	qsc_kmac_initialize(&ctx, keccak_rate_256, key, keylen, custom, custlen);
+	qsc_kmac_update(&ctx, keccak_rate_256, message, msglen);
+	qsc_kmac_finalize(&ctx, keccak_rate_256, output, outlen);
 }
 
-void kmac128_finalize(keccak_state* state, uint8_t* output, size_t outputlen, const uint8_t* message, size_t msglen)
+void qsc_kmac512_compute(uint8_t* output, size_t outlen, const uint8_t* message, size_t msglen, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t custlen)
+{
+	assert(output != NULL);
+	assert(message != NULL);
+	assert(key != NULL);
+
+	qsc_keccak_state ctx;
+
+	qsc_memutils_clear((uint8_t*)ctx.state, sizeof(ctx.state));
+	qsc_kmac_initialize(&ctx, keccak_rate_512, key, keylen, custom, custlen);
+	qsc_kmac_update(&ctx, keccak_rate_512, message, msglen);
+	qsc_kmac_finalize(&ctx, keccak_rate_512, output, outlen);
+}
+
+void qsc_kmac_finalize(qsc_keccak_state* ctx, keccak_rate rate, uint8_t* output, size_t outlen)
 {
 	uint8_t buf[sizeof(size_t) + 1] = { 0 };
-	uint8_t pad[KMAC_STATE_SIZE * sizeof(uint64_t)] = { 0 };
-	size_t outbitlen;
-	size_t i;
+	uint8_t pad[KECCAK_STATE_BYTE_SIZE] = { 0 };
+	size_t bitlen;
 
-	for (i = 0; i < msglen; ++i)
+	qsc_memutils_copy(pad, ctx->buffer, ctx->position);
+	bitlen = keccak_right_encode(buf, outlen * 8);
+	qsc_memutils_copy(pad + ctx->position, buf, bitlen);
+
+	pad[ctx->position + bitlen] = KECCAK_KMAC_DOMAIN_ID;
+	pad[rate - 1] |= 128U;
+	keccak_fast_absorb(ctx->state, pad, rate);
+
+	while (outlen >= (size_t)rate)
 	{
-		pad[i] = message[i];
+		keccak_squeezeblocks(ctx->state, pad, 1, rate);
+		qsc_memutils_copy(output, pad, rate);
+		output += rate;
+		outlen -= rate;
 	}
 
-	outbitlen = right_encode(buf, outputlen * 8);
-
-	for (i = 0; i < outbitlen; ++i)
+	if (outlen > 0)
 	{
-		pad[msglen + i] = buf[i];
+		keccak_squeezeblocks(ctx->state, pad, 1, rate);
+		qsc_memutils_copy(output, pad, outlen);
 	}
 
-	pad[msglen + outbitlen] = KMAC_DOMAIN_ID;
-	pad[KMAC_128_RATE - 1] |= 128U;
-
-	for (i = 0; i < KMAC_128_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	while (outputlen >= KMAC_128_RATE)
-	{
-		keccak_squeezeblocks(state->state, pad, 1, KMAC_128_RATE);
-
-		for (i = 0; i < KMAC_128_RATE; ++i)
-		{
-			output[i] = pad[i];
-		}
-
-		output += KMAC_128_RATE;
-		outputlen -= KMAC_128_RATE;
-	}
-
-	if (outputlen > 0)
-	{
-		keccak_squeezeblocks(state->state, pad, 1, KMAC_128_RATE);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = pad[i];
-		}
-	}
+	qsc_memutils_clear(ctx->buffer, sizeof(ctx->buffer));
+	ctx->position = 0;
 }
 
-void kmac128_initialize(keccak_state* state, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t customlen, const uint8_t* name, size_t namelen)
+void qsc_kmac_initialize(qsc_keccak_state* ctx, keccak_rate rate, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t custlen)
 {
-	uint8_t pad[KMAC_STATE_SIZE * sizeof(uint64_t)] = { 0 };
-	const uint8_t defn[] = { 0x4B, 0x4D, 0x41, 0x43 };
-	const uint8_t* pname;
-	size_t offset;
-	size_t i;
-	size_t j;
+	assert(ctx != NULL);
+	assert(key != NULL);
 
-	clear64(state->state, KMAC_STATE_SIZE);
+	uint8_t pad[QSC_KECCAK_STATE_SIZE * sizeof(uint64_t)] = { 0 };
+	const uint8_t name[] = { 0x4B, 0x4D, 0x41, 0x43 };
+	size_t oft;
+	size_t i;
+
+	qsc_memutils_clear((uint8_t*)ctx->state, sizeof(ctx->state));
+	qsc_memutils_clear(ctx->buffer, sizeof(ctx->buffer));
+	ctx->position = 0;
 
 	/* stage 1: name + custom */
 
-	if (namelen == 0)
+	oft = keccak_left_encode(pad, rate);
+	oft += keccak_left_encode(pad + oft, sizeof(name) * 8);
+
+	for (i = 0; i < sizeof(name); ++i)
 	{
-		pname = defn;
-		namelen = sizeof(defn);
-	}
-	else
-	{
-		pname = name;
+		pad[oft + i] = name[i];
 	}
 
-	offset = left_encode(pad, KMAC_128_RATE);
-	offset += left_encode(pad + offset, namelen * 8);
+	oft += sizeof(name);
+	oft += keccak_left_encode(pad + oft, custlen * 8);
 
-	for (i = 0; i < namelen; ++i)
+	for (i = 0; i < custlen; ++i)
 	{
-		pad[offset + i] = pname[i];
-	}
-
-	offset += namelen;
-	offset += left_encode(pad + offset, customlen * 8);
-
-	for (i = 0; i < customlen; ++i)
-	{
-		if (offset == KMAC_128_RATE)
+		if (oft == rate)
 		{
-			for (j = 0; j < KMAC_128_RATE / sizeof(uint64_t); ++j)
-			{
-				state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-			}
-
-			keccak_permute(state->state);
-			offset = 0;
+			keccak_fast_absorb(ctx->state, pad, rate);
+			qsc_keccak_permute(ctx->state);
+			oft = 0;
 		}
 
-		pad[offset] = custom[i];
-		++offset;
+		pad[oft] = custom[i];
+		++oft;
 	}
 
-	clear8(pad + offset, KMAC_128_RATE - offset);
-
-	for (i = 0; i < KMAC_128_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] = le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	keccak_permute(state->state);
+	qsc_memutils_clear(pad + oft, rate - oft);
+	keccak_fast_absorb(ctx->state, pad, rate);
+	qsc_keccak_permute(ctx->state);
 
 	/* stage 2: key */
 
-	clear8(pad, KMAC_128_RATE);
-	offset = left_encode(pad, KMAC_128_RATE);
-	offset += left_encode(pad + offset, keylen * 8);
+	qsc_memutils_clear(pad, rate);
+	oft = keccak_left_encode(pad, rate);
+	oft += keccak_left_encode(pad + oft, keylen * 8);
 
 	for (i = 0; i < keylen; ++i)
 	{
-		if (offset == KMAC_128_RATE)
+		if (oft == rate)
 		{
-			for (j = 0; j < KMAC_128_RATE / sizeof(uint64_t); ++j)
-			{
-				state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-			}
-
-			keccak_permute(state->state);
-			offset = 0;
+			keccak_fast_absorb(ctx->state, pad, rate);
+			qsc_keccak_permute(ctx->state);
+			oft = 0;
 		}
 
-		pad[offset] = key[i];
-		++offset;
+		pad[oft] = key[i];
+		++oft;
 	}
 
-	clear8(pad + offset, KMAC_128_RATE - offset);
-
-	for (i = 0; i < KMAC_128_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	keccak_permute(state->state);
+	qsc_memutils_clear(pad + oft, rate - oft);
+	keccak_fast_absorb(ctx->state, pad, rate);
+	qsc_keccak_permute(ctx->state);
 }
 
-void kmac256_compute(uint8_t* output, size_t outputlen, const uint8_t* message, size_t msglen, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t customlen, const uint8_t* name, size_t namelen)
+void qsc_kmac_update(qsc_keccak_state* ctx, keccak_rate rate, const uint8_t* message, size_t msglen)
 {
-	keccak_state state;
-
-	clear64(state.state, KMAC_STATE_SIZE);
-	kmac256_initialize(&state, key, keylen, custom, customlen, name, namelen);
-
-	if (msglen >= KMAC_256_RATE)
-	{
-		const size_t rndlen = (msglen / KMAC_256_RATE) * KMAC_256_RATE;
-		kmac256_blockupdate(&state, message, rndlen / KMAC_256_RATE);
-		msglen -= rndlen;
-		message += rndlen;
-	}
-
-	kmac256_finalize(&state, output, outputlen, message, msglen);
-}
-
-void kmac256_blockupdate(keccak_state* state, const uint8_t* message, size_t nblocks)
-{
-	size_t i;
-
-	while (nblocks > 0)
-	{
-		for (i = 0; i < KMAC_256_RATE / sizeof(uint64_t); ++i)
-		{
-			state->state[i] ^= le8to64(message + (sizeof(uint64_t) * i));
-		}
-
-		keccak_permute(state->state);
-
-		--nblocks;
-		message += KMAC_256_RATE;
-	}
-}
-
-void kmac256_finalize(keccak_state* state, uint8_t* output, size_t outputlen, const uint8_t* message, size_t msglen)
-{
-	uint8_t buf[sizeof(size_t) + 1] = { 0 };
-	uint8_t pad[KMAC_STATE_SIZE * sizeof(uint64_t)] = { 0 };
-	size_t outbitlen;
-	size_t i;
-
-	for (i = 0; i < msglen; ++i)
-	{
-		pad[i] = message[i];
-	}
-
-	outbitlen = right_encode(buf, outputlen * 8);
-
-	for (i = 0; i < outbitlen; ++i)
-	{
-		pad[msglen + i] = buf[i];
-	}
-
-	pad[msglen + outbitlen] = KMAC_DOMAIN_ID;
-	pad[KMAC_256_RATE - 1] |= 128U;
-
-	for (i = 0; i < KMAC_256_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	while (outputlen >= KMAC_256_RATE)
-	{
-		keccak_squeezeblocks(state->state, pad, 1, KMAC_256_RATE);
-
-		for (i = 0; i < KMAC_256_RATE; ++i)
-		{
-			output[i] = pad[i];
-		}
-
-		output += KMAC_256_RATE;
-		outputlen -= KMAC_256_RATE;
-	}
-
-	if (outputlen > 0)
-	{
-		keccak_squeezeblocks(state->state, pad, 1, KMAC_256_RATE);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = pad[i];
-		}
-	}
-}
-
-void kmac256_initialize(keccak_state* state, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t customlen, const uint8_t* name, size_t namelen)
-{
-	uint8_t pad[KMAC_STATE_SIZE * sizeof(uint64_t)] = { 0 };
-	const uint8_t defn[] = { 0x4B, 0x4D, 0x41, 0x43 };
-	const uint8_t* pname;
-	size_t offset;
-	size_t i;
-	size_t j;
-
-	clear64(state->state, KMAC_STATE_SIZE);
-	clear8(pad, KMAC_256_RATE);
-
-	/* stage 1: name + custom */
-
-	if (namelen == 0)
-	{
-		pname = defn;
-		namelen = sizeof(defn);
-	}
-	else
-	{
-		pname = name;
-	}
-
-	offset = left_encode(pad, KMAC_256_RATE);
-	offset += left_encode(pad + offset, namelen * 8);
-
-	for (i = 0; i < namelen; ++i)
-	{
-		pad[offset + i] = pname[i];
-	}
-
-	offset += namelen;
-	offset += left_encode(pad + offset, customlen * 8);
-
-	for (i = 0; i < customlen; ++i)
-	{
-		if (offset == KMAC_256_RATE)
-		{
-			for (j = 0; j < KMAC_256_RATE / sizeof(uint64_t); ++j)
-			{
-				state->state[j] ^= le8to64(pad + (j * 8));
-			}
-
-			keccak_permute(state->state);
-			offset = 0;
-		}
-
-		pad[offset] = custom[i];
-		++offset;
-	}
-
-	clear8(pad + offset, KMAC_256_RATE - offset);
-
-	for (i = 0; i < KMAC_256_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] = le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	keccak_permute(state->state);
-
-	/* stage 2: key */
-
-	clear8(pad, KMAC_256_RATE);
-	offset = left_encode(pad, KMAC_256_RATE);
-	offset += left_encode(pad + offset, keylen * 8);
-
-	for (i = 0; i < keylen; ++i)
-	{
-		if (offset == KMAC_256_RATE)
-		{
-			for (j = 0; j < KMAC_256_RATE / sizeof(uint64_t); ++j)
-			{
-				state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-			}
-
-			keccak_permute(state->state);
-			offset = 0;
-		}
-
-		pad[offset] = key[i];
-		++offset;
-	}
-
-	clear8(pad + offset, KMAC_256_RATE - offset);
-
-	for (i = 0; i < KMAC_256_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	keccak_permute(state->state);
-}
-
-void kmac512_compute(uint8_t* output, size_t outputlen, const uint8_t* message, size_t msglen, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t customlen, const uint8_t* name, size_t namelen)
-{
-	keccak_state state;
-
-	clear64(state.state, KMAC_STATE_SIZE);
-	kmac512_initialize(&state, key, keylen, custom, customlen, name, namelen);
-
-	if (msglen >= KMAC_512_RATE)
-	{
-		const size_t rndlen = (msglen / KMAC_512_RATE) * KMAC_512_RATE;
-		kmac512_blockupdate(&state, message, rndlen / KMAC_512_RATE);
-		msglen -= rndlen;
-		message += rndlen;
-	}
-
-	kmac512_finalize(&state, output, outputlen, message, msglen);
-}
-
-void kmac512_blockupdate(keccak_state* state, const uint8_t* message, size_t nblocks)
-{
-	size_t i;
-
-	while (nblocks > 0)
-	{
-		for (i = 0; i < KMAC_512_RATE / sizeof(uint64_t); ++i)
-		{
-			state->state[i] ^= le8to64(message + (sizeof(uint64_t) * i));
-		}
-
-		keccak_permute(state->state);
-
-		--nblocks;
-		message += KMAC_512_RATE;
-	}
-}
-
-void kmac512_finalize(keccak_state* state, uint8_t* output, size_t outputlen, const uint8_t* message, size_t msglen)
-{
-	uint8_t buf[sizeof(size_t) + 1] = { 0 };
-	uint8_t pad[KMAC_STATE_SIZE * sizeof(uint64_t)] = { 0 };
-	size_t outbitlen;
-	size_t i;
-
-	clear8(pad, KMAC_512_RATE);
-
-	for (i = 0; i < msglen; ++i)
-	{
-		pad[i] = message[i];
-	}
-
-	outbitlen = right_encode(buf, outputlen * 8);
-
-	for (i = 0; i < outbitlen; ++i)
-	{
-		pad[msglen + i] = buf[i];
-	}
-
-	pad[msglen + outbitlen] = KMAC_DOMAIN_ID;
-	pad[KMAC_512_RATE - 1] |= 128U;
-
-	for (i = 0; i < KMAC_512_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	while (outputlen >= KMAC_512_RATE)
-	{
-		keccak_squeezeblocks(state->state, pad, 1, KMAC_512_RATE);
-
-		for (i = 0; i < KMAC_512_RATE; ++i)
-		{
-			output[i] = pad[i];
-		}
-
-		output += KMAC_512_RATE;
-		outputlen -= KMAC_512_RATE;
-	}
-
-	if (outputlen > 0)
-	{
-		keccak_squeezeblocks(state->state, pad, 1, KMAC_512_RATE);
-
-		for (i = 0; i < outputlen; ++i)
-		{
-			output[i] = pad[i];
-		}
-	}
-}
-
-void kmac512_initialize(keccak_state* state, const uint8_t* key, size_t keylen, const uint8_t* custom, size_t customlen, const uint8_t* name, size_t namelen)
-{
-	uint8_t pad[KMAC_STATE_SIZE * sizeof(uint64_t)] = { 0 };
-	const uint8_t defn[] = { 0x4B, 0x4D, 0x41, 0x43 };
-	const uint8_t* pname;
-	size_t offset;
-	size_t i;
-	size_t j;
-
-	clear64(state->state, KMAC_STATE_SIZE);
-
-	/* stage 1: name + custom */
-
-	if (namelen == 0)
-	{
-		pname = defn;
-		namelen = sizeof(defn);
-	}
-	else
-	{
-		pname = name;
-	}
-
-	offset = left_encode(pad, KMAC_512_RATE);
-	offset += left_encode(pad + offset, namelen * 8);
-
-	for (i = 0; i < namelen; ++i)
-	{
-		pad[offset + i] = pname[i];
-	}
-
-	offset += namelen;
-	offset += left_encode(pad + offset, customlen * 8);
-
-	for (i = 0; i < customlen; ++i)
-	{
-		if (offset == KMAC_512_RATE)
-		{
-			for (j = 0; j < KMAC_512_RATE / sizeof(uint64_t); ++j)
-			{
-				state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-			}
-
-			keccak_permute(state->state);
-			offset = 0;
-		}
-
-		pad[offset] = custom[i];
-		++offset;
-	}
-
-	clear8(pad + offset, KMAC_512_RATE - offset);
-
-	for (i = 0; i < KMAC_512_RATE / 8; ++i)
-	{
-		state->state[i] = le8to64(pad + (i * 8));
-	}
-
-	keccak_permute(state->state);
-
-	/* stage 2: key */
-
-	clear8(pad, KMAC_512_RATE);
-	offset = left_encode(pad, KMAC_512_RATE);
-	offset += left_encode(pad + offset, keylen * 8);
-
-	for (i = 0; i < keylen; ++i)
-	{
-		if (offset == KMAC_512_RATE)
-		{
-			for (j = 0; j < KMAC_512_RATE / sizeof(uint64_t); ++j)
-			{
-				state->state[j] ^= le8to64(pad + (j * sizeof(uint64_t)));
-			}
-
-			keccak_permute(state->state);
-			offset = 0;
-		}
-
-		pad[offset] = key[i];
-		++offset;
-	}
-
-	clear8(pad + offset, KMAC_512_RATE - offset);
-
-	for (i = 0; i < KMAC_512_RATE / sizeof(uint64_t); ++i)
-	{
-		state->state[i] ^= le8to64(pad + (i * sizeof(uint64_t)));
-	}
-
-	keccak_permute(state->state);
+	keccak_update(ctx, rate, message, msglen);
 }

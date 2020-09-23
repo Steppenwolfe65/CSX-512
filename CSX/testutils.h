@@ -1,5 +1,5 @@
-#ifndef QSCTEST_TEST_UTILS_H
-#define QSCTEST_TEST_UTILS_H
+#ifndef QSCTEST_TESTUTILS_H
+#define QSCTEST_TESTUTILS_H
 
 #include "common.h"
 
@@ -20,5 +20,12 @@ void hex_to_bin(const char* hexstr, uint8_t* output, size_t length);
 * \param linelen: the length of output to print, before starting a new line
 */
 void print_hex(const uint8_t* input, size_t inputlen, size_t linelen);
+
+/**
+* \brief Print an array of characters to the console
+*
+* \param input: the character array to print
+*/
+void print_safe(const char* input);
 
 #endif
