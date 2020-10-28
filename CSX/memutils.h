@@ -41,7 +41,7 @@
 * \param address: The array memory address
 * \param length: The number of bytes to prefetch
 */
-void qsc_memutils_prefetch_l1(void* address, size_t length);
+QSC_EXPORT_API void qsc_memutils_prefetch_l1(uint8_t* address, size_t length);
 
 /**
 * \brief Prefetch memory to L2 cache
@@ -49,7 +49,7 @@ void qsc_memutils_prefetch_l1(void* address, size_t length);
 * \param address: The array memory address
 * \param length: The number of bytes to prefetch
 */
-void qsc_memutils_prefetch_l2(void* address, size_t length);
+QSC_EXPORT_API void qsc_memutils_prefetch_l2(uint8_t* address, size_t length);
 
 /**
 * \brief Prefetch memory to L3 cache
@@ -57,7 +57,7 @@ void qsc_memutils_prefetch_l2(void* address, size_t length);
 * \param address: The array memory address
 * \param length: The number of bytes to prefetch
 */
-void qsc_memutils_prefetch_l3(void* address, size_t length);
+QSC_EXPORT_API void qsc_memutils_prefetch_l3(uint8_t* address, size_t length);
 
 /**
 * \brief Allocate an aligned 8-bit integer array
@@ -67,14 +67,14 @@ void qsc_memutils_prefetch_l3(void* address, size_t length);
 *
 * \return Returns the aligned array of bytes, or NULL on failure
 */
-uint8_t* qsc_memutils_aligned_alloc(int align, size_t length);
+QSC_EXPORT_API uint8_t* qsc_memutils_aligned_alloc(int align, size_t length);
 
 /**
 * \brief Free an aligned memory block created with aligned_alloc
 *
 * \param block: A pointer to the memory block to release
 */
-void qsc_memutils_aligned_free(uint8_t* block);
+QSC_EXPORT_API void qsc_memutils_aligned_free(uint8_t* block);
 
 /**
 * \brief Erase a block of memory
@@ -82,7 +82,7 @@ void qsc_memutils_aligned_free(uint8_t* block);
 * \param output: A pointer to the memory block to erase
 * \param length: The number of bytes to erase
 */
-void qsc_memutils_clear(uint8_t* output, size_t length);
+QSC_EXPORT_API void qsc_memutils_clear(uint8_t* output, size_t length);
 
 /**
 * \brief Copy a block of memory
@@ -91,7 +91,7 @@ void qsc_memutils_clear(uint8_t* output, size_t length);
 * \param input: A pointer to the source array
 * \param length: The number of bytes to copy
 */
-void qsc_memutils_copy(uint8_t* output, const uint8_t* input, size_t length);
+QSC_EXPORT_API void qsc_memutils_copy(uint8_t* output, const uint8_t* input, size_t length);
 
 /**
 * \brief Set a block of memory to a value
@@ -100,7 +100,7 @@ void qsc_memutils_copy(uint8_t* output, const uint8_t* input, size_t length);
 * \param length: The number of bytes to change
 * \param value: The value to set each byte
 */
-void qsc_memutils_setvalue(uint8_t* output, size_t length, uint8_t value);
+QSC_EXPORT_API void qsc_memutils_setvalue(uint8_t* output, size_t length, uint8_t value);
 
 /**
 * \brief Bitwise XOR a block of memory
@@ -109,7 +109,7 @@ void qsc_memutils_setvalue(uint8_t* output, size_t length, uint8_t value);
 * \param input: A pointer to the source array
 * \param length: The number of bytes to XOR
 */
-void qsc_memutils_xor(uint8_t* output, const uint8_t* input, size_t length);
+QSC_EXPORT_API void qsc_memutils_xor(uint8_t* output, const uint8_t* input, size_t length);
 
 /**
 * \brief Bitwise XOR a block of memory to a byte value
@@ -118,6 +118,6 @@ void qsc_memutils_xor(uint8_t* output, const uint8_t* input, size_t length);
 * \param input: A byte value
 * \param length: The number of bytes to XOR
 */
-void qsc_memutils_xorv(uint8_t* output, const uint8_t value, size_t length);
+QSC_EXPORT_API void qsc_memutils_xorv(uint8_t* output, const uint8_t value, size_t length);
 
 #endif

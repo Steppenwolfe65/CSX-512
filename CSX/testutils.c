@@ -1,7 +1,22 @@
 #include "testutils.h"
 #include <stdio.h>
 
-void hex_to_bin(const char* hexstr, uint8_t* output, size_t length)
+char qsctest_get_char()
+{
+	char line[8] = { 0 };
+	fgets(line, sizeof(line), stdin);
+
+	return line[0];
+}
+
+void qsctest_get_wait()
+{
+	wint_t res;
+
+	res = getwchar();
+}
+
+void qsctest_hex_to_bin(const char* hexstr, uint8_t* output, size_t length)
 {
 	size_t  pos;
 	uint8_t  idx0;
@@ -25,7 +40,7 @@ void hex_to_bin(const char* hexstr, uint8_t* output, size_t length)
 	}
 }
 
-void print_hex(const uint8_t* input, size_t inputlen, size_t linelen)
+void qsctest_print_hex(const uint8_t* input, size_t inputlen, size_t linelen)
 {
 	size_t i;
 
@@ -42,7 +57,7 @@ void print_hex(const uint8_t* input, size_t inputlen, size_t linelen)
 
 		input += linelen;
 		inputlen -= linelen;
-		print_safe("\n");
+		qsctest_print_safe("\n");
 	}
 
 	if (inputlen != 0)
@@ -58,7 +73,7 @@ void print_hex(const uint8_t* input, size_t inputlen, size_t linelen)
 	}
 }
 
-void print_safe(const char* input)
+void qsctest_print_safe(const char* input)
 {
 	if (input != NULL)
 	{
@@ -68,4 +83,46 @@ void print_safe(const char* input)
 		printf(input);
 #endif
 	}
+}
+
+void qsctest_print_line(const char* input)
+{
+	qsctest_print_safe(input);
+	qsctest_print_safe("\n");
+}
+
+void qsctest_print_ulong(uint64_t digit)
+{
+#if defined(_MSC_VER)
+	printf_s("%llu", digit);
+#else
+	printf("%llu", digit);
+#endif
+}
+
+void qsctest_print_double(double digit)
+{
+#if defined(_MSC_VER)
+	printf_s("%.*lf", 3, digit);
+#else
+	printf("%.*lf", 3, digit);
+#endif
+}
+
+bool qsctest_test_confirm(char* message)
+{
+	char ans;
+	bool res;
+
+	qsctest_print_line(message);
+
+	res = false;
+	ans = qsctest_get_char();
+
+	if (ans == 'y' || ans == 'Y')
+	{
+		res = true;
+	}
+
+	return res;
 }

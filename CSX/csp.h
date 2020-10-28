@@ -55,6 +55,6 @@
 * \param length: The number of bytes to copy
 * \return Returns true for success
 */
-bool qsc_csp_generate(uint8_t* output, size_t length);
+QSC_EXPORT_API bool qsc_csp_generate(uint8_t* output, size_t length);
 
 #endif

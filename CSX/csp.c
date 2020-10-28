@@ -1,12 +1,6 @@
 #include "csp.h"
 
-#ifndef WIN32
-#	if defined(_WIN64) || defined(_WIN32)
-#		define WIN32
-#	endif
-#endif
-
-#ifdef WIN32
+#if defined(QSC_SYSTEM_OS_WINDOWS)
 #	include <tchar.h>
 #	include <windows.h>
 #	include <Wincrypt.h>
@@ -35,7 +29,7 @@ bool qsc_csp_generate(uint8_t* output, size_t length)
 
 	res = true;
 
-#ifdef WIN32
+#if defined(QSC_SYSTEM_OS_WINDOWS)
 
 	HCRYPTPROV hprov;
 

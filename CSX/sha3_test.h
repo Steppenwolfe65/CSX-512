@@ -148,6 +148,22 @@ bool qsctest_kmac_256_kat();
 bool qsctest_kmac_512_kat();
 
 /**
+* \brief Tests the 256-bit version of the Keccak-based Parallel Authentication MAC (KPA) function for correct operation,
+* using original vectors.
+*
+* \return Returns true for success
+*/
+bool qsctest_kpa_256_kat();
+
+/**
+* \brief Tests the 512-bit version of the Keccak-based Parallel Authentication MAC (KPA) function for correct operation,
+* using original vectors.
+*
+* \return Returns true for success
+*/
+bool qsctest_kpa_512_kat();
+
+/**
 * \brief Run all tests.
 */
 void qsctest_sha3_run();

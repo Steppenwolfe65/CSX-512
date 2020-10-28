@@ -19,7 +19,9 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="benchmark.h" />
     <ClInclude Include="common.h" />
+    <ClInclude Include="cpuid.h" />
     <ClInclude Include="csp.h" />
     <ClInclude Include="csx.h" />
     <ClInclude Include="csx_test.h" />
@@ -28,10 +30,12 @@
     <ClInclude Include="memutils.h" />
     <ClInclude Include="sha3.h" />
     <ClInclude Include="sha3_test.h" />
-    <ClInclude Include="sysrand.h" />
     <ClInclude Include="testutils.h" />
+    <ClInclude Include="timer.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="benchmark.c" />
+    <ClCompile Include="cpuid.c" />
     <ClCompile Include="csp.c" />
     <ClCompile Include="csx.c" />
     <ClCompile Include="csx_test.c" />
@@ -40,8 +44,8 @@
     <ClCompile Include="memutils.c" />
     <ClCompile Include="sha3.c" />
     <ClCompile Include="sha3_test.c" />
-    <ClCompile Include="sysrand.c" />
     <ClCompile Include="testutils.c" />
+    <ClCompile Include="timer.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
@@ -115,7 +119,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
       <PrecompiledHeaderFile />
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -131,7 +135,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
       <PrecompiledHeaderFile />
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -149,7 +153,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
       <PrecompiledHeaderFile />
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
@@ -169,7 +173,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
       <PrecompiledHeaderFile />
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>

@@ -12,8 +12,15 @@
 #define QSCTEST_CSX_TEST_H
 
 #include "common.h"
+#include "csx.h"
 
-#define CSXTEST_TEST_CYCLES 100
+#define QSCTEST_CSX_TEST_CYCLES 100
+
+#if defined(QSC_SYSTEM_AVX_INTRINSICS) 
+#	if !defined(QSC_CSX_AUTHENTICATED)
+#	define QSCTEST_CSX_WIDE_BLOCK_TESTS
+#	endif
+#endif
 
 /**
 * \brief Tests the CSX 512-bit key KAT vectors from CEX.
@@ -33,6 +40,15 @@ bool qsctest_csx512_kat();
 * \return Returns true for success
 */
 bool qsctest_csx512_stress();
+
+#if defined(QSCTEST_CSX_WIDE_BLOCK_TESTS)
+/**
+* \brief Tests the CSX AVX functions for equal output to sequential processing.
+*
+* \return Returns true for success
+*/
+bool qsctest_csx_wide_equality();
+#endif
 
 /**
 * \brief Run all tests.
