@@ -138,6 +138,20 @@
 #	endif
 #endif
 
+// 32 or 64 bit architecture
+#if (defined(__x86_64__) || defined(__amd64__) || defined(_M_X64))
+#	define QSC_ARCH_64
+#else
+#	define QSC_ARCH_32
+#endif
+
+// network architecture
+#if defined(_WIN64) || defined(_WIN32) || defined(__CYGWIN__)
+#	define QSC_SYSTEM_WINDOWS_SOCKETS
+#else
+#	define QSC_SYSTEM_BERKELY_SOCKETS
+#endif
+
 #if !defined(__clang__) && !defined(__GNUC__)
 #	ifdef __attribute__
 #		undef __attribute__
@@ -171,6 +185,12 @@
 #	endif
 #else
 #	define QSC_EXPORT_API
+#endif
+
+#if defined(__GNUC__)
+#	define QSC_CACHE_ALIGNED __attribute__((aligned(64)))
+#elif defined(_MSC_VER)
+#	define QSC_CACHE_ALIGNED __declspec(align(64))
 #endif
 
 #if defined(QSC_SYSTEM_ARCH_X64) || defined(QSC_SYSTEM_ARCH_ARM64) || defined(QSC_SYSTEM_ARCH_IA64) || defined(QSC_SYSTEM_ARCH_AMD64) || defined(QSC_SYSTEM_ARCH_ARM64) || defined(QSC_SYSTEM_ARCH_SPARC64)
@@ -209,9 +229,9 @@
 #	define QSC_SYSTEM_NATIVE_UINT128
 	// Prefer TI mode over __int128 as GCC rejects the latter in pedantic mode
 #	if defined(__GNUG__)
-typedef uint32_t uint128_t __attribute__((mode(TI)));
+		typedef uint32_t uint128_t __attribute__((mode(TI)));
 #	else
-typedef unsigned __int128 uint128_t;
+		typedef unsigned __int128 uint128_t;
 #	endif
 #endif
 
@@ -291,7 +311,7 @@ typedef unsigned __int128 uint128_t;
 #if defined(QSC_SYSTEM_COMPILER_MSC)
 #	define QSC_SYSTEM_OPTIMIZE_IGNORE __pragma(optimize("", off))
 #elif defined(QSC_SYSTEM_COMPILER_GCC) || defined(QSC_SYSTEM_COMPILER_MINGW)
-_Pragma(QSC_SYSTEM_TO_STRING(GCC optimize("O0")))
+	_Pragma(QSC_SYSTEM_TO_STRING(GCC optimize("O0")))
 #	define QSC_SYSTEM_TO_STRING #pragma GCC optimize ("O0"), #pragma GCC optimize ("O0")
 #elif defined(QSC_SYSTEM_COMPILER_CLANG)
 #	define QSC_SYSTEM_OPTIMIZE_IGNORE __attribute__((optnone))
@@ -325,11 +345,11 @@ _Pragma(QSC_SYSTEM_TO_STRING(GCC optimize("O0")))
 /*
 * AVX512 Capabilities Check
 * TODO: future expansion (if you can test it, I'll add it)
-* links:
+* links: 
 * https://software.intel.com/en-us/intel-cplusplus-compiler-16.0-user-and-reference-guide
 * https://software.intel.com/en-us/articles/compiling-for-the-intel-xeon-phi-processor-and-the-intel-avx-512-isa
 * https://colfaxresearch.com/knl-avx512/
-*
+* 
 * #include <immintrin.h>
 * supported is 1: ex. __AVX512CD__ 1
 * F		__AVX512F__					Foundation
@@ -344,7 +364,7 @@ _Pragma(QSC_SYSTEM_TO_STRING(GCC optimize("O0")))
 * VNNIW	__AVX5124VNNIW__			Vector instructions for deep learning enhanced word variable precision
 * FMAPS	__AVX5124FMAPS__			Vector instructions for deep learning floating - point single precision
 * VPOPCNT	__AVX512VPOPCNTDQ__		?
-*
+* 
 * Note: AVX512 is currently untested, this flag enables support on a compliant system
 */
 
@@ -435,5 +455,100 @@ _Pragma(QSC_SYSTEM_TO_STRING(GCC optimize("O0")))
 * if undefined, functions use the compact form of the keccak permutation
 */
 //#define QSC_KECCAK_UNROLLED_PERMUTATION
+
+/*** McEliece ***/
+
+/*!
+\def QSC_MCELIECE_N6960T119
+* Implement the McEliece N6960T119 parameter set
+*/
+#define QSC_MCELIECE_N6960T119
+
+/*!
+\def QSC_MCELIECE_N8192T128
+* Implement the McEliece N8192T128 parameter set
+*/
+//#define QSC_MCELIECE_N8192T128
+
+
+/*** Kyber ***/
+
+/*!
+\def QSC_KYBER_S1Q3329N256
+* Implement the Kyber S1Q3329N256 parameter set
+*/
+//#define QSC_KYBER_S1Q3329N256
+
+/*!
+\def QSC_KYBER_S2Q3329N256
+* Implement the Kyber S2Q3329N256 parameter set
+*/
+#define QSC_KYBER_S2Q3329N256
+
+/*!
+\def QSC_KYBER_S3Q3329N256
+* Implement the Kyber S3Q3329N256 parameter set
+*/
+//#define QSC_KYBER_S3Q3329N256
+
+
+/*** ECDH ***/
+
+/*!
+\def QSC_ECDH_S1EC25519
+* Implement the ECDH S1EC25519 parameter set
+*/
+#define QSC_ECDH_S1EC25519
+
+
+/*** Dilithium ***/
+
+/*!
+\def QSC_DILITHIUM_S1N256Q8380417
+* Implement the Dilithium S1N256Q8380417 parameter set
+*/
+//#define QSC_DILITHIUM_S1N256Q8380417
+
+/*!
+\def QSC_DILITHIUM_S2N256Q8380417
+* Implement the Dilithium S2N256Q8380417 parameter set
+*/
+#define QSC_DILITHIUM_S2N256Q8380417
+
+/*!
+\def QSC_DILITHIUM_S3N256Q8380417
+* Implement the Dilithium S3N256Q8380417 parameter set
+*/
+//#define QSC_DILITHIUM_S3N256Q8380417
+
+
+/*** SphincsPlus ***/
+
+/*!
+\def QSC_SPHINCSPLUS_S1S128SHAKE
+* Implement the SphincsPlus S1S128SHAKE parameter set
+*/
+#define QSC_SPHINCSPLUS_S1S128SHAKE
+
+/*!
+\def QSC_SPHINCSPLUS_S2S192SHAKE
+* Implement the SphincsPlus S2S192SHAKE parameter set
+*/
+//#define QSC_SPHINCSPLUS_S2S192SHAKE
+
+/*!
+\def QSC_SPHINCSPLUS_S3S256SHAKE
+* Implement the SphincsPlus S3S256SHAKE parameter set
+*/
+//#define QSC_SPHINCSPLUS_S3S256SHAKE
+
+
+/*** ECDSA ***/
+
+/*!
+\def QSC_ECDSA_S1EC25519
+* Implement the ECDSA S1EC25519 parameter set
+*/
+#define QSC_ECDSA_S1EC25519
 
 #endif

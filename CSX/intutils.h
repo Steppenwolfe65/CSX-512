@@ -103,24 +103,6 @@ QSC_EXPORT_API void qsc_intutils_be8increment(uint8_t* output, size_t outlen);
 
 #if defined(QSC_SYSTEM_HAS_AVX)
 /**
-* \brief Increment the low 64-bit integer of a big endian array by one
-*
-* \param counter: The counter vector
-*/
-QSC_EXPORT_API void qsc_intutils_beincrement_x128(__m128i* counter);
-#endif
-
-#if defined(QSC_SYSTEM_HAS_AVX512)
-/**
-* \brief Offset increment the low 64-bit integer of a set of 64-bit pairs of a big endian integers (ex. lo + 1,2,3,4)
-*
-* \param counter: The counter vector
-*/
-QSC_EXPORT_API void qsc_intutils_beincrement_x512(__m512i* counter);
-#endif
-
-#if defined(QSC_SYSTEM_HAS_AVX)
-/**
 * \brief Byte reverse an array of 32-bit integers
 *
 * \param destination: the destination array
@@ -207,6 +189,24 @@ QSC_EXPORT_API bool qsc_intutils_is_equal(size_t x, size_t y);
 * \return: Returns true if the base integer is greater or equal to the comparison integer
 */
 QSC_EXPORT_API bool qsc_intutils_is_gte(size_t x, size_t y);
+
+/**
+* \brief Convert a hex string to an array
+*
+* \param hexstr: The hexidecimal string
+* \param output: The array output
+* \param length: The length of the input string
+*/
+QSC_EXPORT_API void qsc_intutils_hex_to_bin(const char* hexstr, uint8_t* output, size_t length);
+
+/**
+* \brief Convert an array to a hex string
+*
+* \param input: The array input
+* \param hexstr: The hexidecimal string output; must be 2x the size of input array
+* \param length: The length of the input array
+*/
+QSC_EXPORT_API void qsc_intutils_bin_to_hex(const uint8_t* input, char* hexstr, size_t length);
 
 /**
 * \brief Increment an 8-bit integer array as a segmented little-endian integer

@@ -5,7 +5,7 @@
 * Test vectors are from the CEX cryptographic library, reference:
 * The C++ <a href="https://github.com/Steppenwolfe65/CEX">CEX cryptographic library</a>
 * \author John Underhill \n
-* \date August 25, 2020
+* \date October 25, 2020
 */
 
 #ifndef QSCTEST_CSX_TEST_H
@@ -16,9 +16,9 @@
 
 #define QSCTEST_CSX_TEST_CYCLES 100
 
-#if defined(QSC_SYSTEM_AVX_INTRINSICS) 
-#	if !defined(QSC_CSX_AUTHENTICATED)
-#	define QSCTEST_CSX_WIDE_BLOCK_TESTS
+#if defined(QSC_SYSTEM_AVX_INTRINSICS)
+#if !defined(QSC_CSX_AUTHENTICATED)
+#		define QSCTEST_CSX_WIDE_BLOCK_TESTS
 #	endif
 #endif
 

@@ -1,26 +1,27 @@
 /* The GPL version 3 License (GPLv3)
-*
+* 
 * Copyright (c) 2020 Digital Freedom Defence Inc.
 * This file is part of the QSC Cryptographic library
-*
+* 
 * This program is free software : you can redistribute it and / or modify
 * it under the terms of the GNU General Public License as published by
 * the Free Software Foundation, either version 3 of the License, or
 * (at your option) any later version.
-*
+* 
 * This program is distributed in the hope that it will be useful,
 * but WITHOUT ANY WARRANTY; without even the implied warranty of
 * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
 * GNU General Public License for more details.
-*
+* 
 * You should have received a copy of the GNU General Public License
 * along with this program. If not, see <http://www.gnu.org/licenses/>.
-*
+* 
 *
 * Implementation Details:
 * An implementation of the CSX-512 authenticated stream cipher.
 * Written by John G. Underhill
 * August 25, 2020
+* Updated October 28, 2020
 * Contact: develop@vtdev.com */
 
 /**
@@ -31,7 +32,7 @@
 * \author		John G. Underhill
 * \version		1.0.0.0b
 * \date			May 2, 2020
-* \updated		October 25, 2020
+* \updated		October 28, 2020
 * \contact:		develop@vtdev.com
 * \copyright	GPL version 3 license (GPLv3)
 *
@@ -84,7 +85,7 @@
 * \section Description
 * \paragraph An [EXPERIMENTAL] vectorized, 64-bit, 40-round stream cipher [CSX512] implementation based on ChaCha.
 * This cipher uses KMAC-512 to authenticate the cipher-text stream in an encrypt-then-mac authentication configuration.
-* The CSX (authenticated Cipher Stream, ChaCha eXtended) cipher, is a hybrid of the ChaCha stream cipher,
+* The CSX (authenticated Cipher Stream, ChaCha eXtended) cipher, is a hybrid of the ChaCha stream cipher, 
 * using 64-bit integers, a 1024-bit block and a 512-bit key. \n
 *
 * \section Mechanism Overview
@@ -121,7 +122,17 @@
 \def QSC_CSX_AUTHENTICATED
 * \brief Enables KMAC authentication mode.
 */
-//#define QSC_CSX_AUTHENTICATED
+#if !defined(QSC_CSX_AUTHENTICATED)
+//#	define QSC_CSX_AUTHENTICATED
+#endif
+
+#if defined(QSC_CSX_AUTHENTICATED)
+/*!
+* \def QSC_CSX_KPA_AUTHENTICATION
+* \brief Toggles authentication between KMAC and KPA, default is KPA.
+*/
+#	define QSC_CSX_KPA_AUTHENTICATION
+#endif
 
 /*!
 \def QSC_CSX_BLOCK_SIZE
@@ -159,7 +170,7 @@
 */
 #define QSC_CSX_STATE_SIZE 16
 
-/*!
+/*! 
 * \struct qsc_csx_keyparams
 * \brief The key parameters structure containing key, nonce, and info arrays and lengths.
 * Use this structure to load an input cipher-key and optional info tweak, using the qsc_csx_initialize function.
@@ -176,19 +187,20 @@ QSC_EXPORT_API typedef struct
 	size_t infolen;			/*!< The length in bytes of the information tweak */
 } qsc_csx_keyparams;
 
-/*!
+/*! 
 * \struct qsc_csx_state
 * \brief The internal state structure containing the round-key array.
 */
 QSC_EXPORT_API typedef struct
 {
-	uint64_t state[QSC_CSX_STATE_SIZE];						/*!< the primary state array */
-	//uint64_t nonce[QSC_CSX_NONCE_SIZE / sizeof(uint64_t)];	/*!< the nonce array */
-	qsc_keccak_state kstate;								/*!< the kmac state structure */
-	uint64_t counter;										/*!< the processed bytes counter */
-	const uint8_t* aad;										/*!< the additional data array */
-	size_t aadlen;											/*!< the additional data array length */
-	bool encrypt;											/*!< the transformation mode; true for encryption */
+	uint64_t state[QSC_CSX_STATE_SIZE];		/*!< the primary state array */
+#if defined(QSC_CSX_KPA_AUTHENTICATION)
+	qsc_kpa_state kstate;					/*!< the KPA state structure */
+#else
+	qsc_keccak_state kstate;				/*!< the kmac state structure */
+#endif
+	uint64_t counter;						/*!< the processed bytes counter */
+	bool encrypt;							/*!< the transformation mode; true for encryption */
 } qsc_csx_state;
 
 /* public functions */
@@ -222,9 +234,9 @@ QSC_EXPORT_API void qsc_csx_initialize(qsc_csx_state* ctx, const qsc_csx_keypara
 *
 * \param ctx: [struct] The cipher state structure
 * \param data: [const] The associated data array
-* \param datalen: The associated data array length
+* \param length: The associated data array length
 */
-QSC_EXPORT_API void qsc_csx_set_associated(qsc_csx_state* ctx, const uint8_t* data, size_t datalen);
+QSC_EXPORT_API void qsc_csx_set_associated(qsc_csx_state* ctx, const uint8_t* data, size_t length);
 
 /**
 * \brief Transform an array of bytes.

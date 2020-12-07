@@ -64,14 +64,14 @@ static void csx_permute_p1024c(qsc_csx_state* ctx, uint8_t* output)
 	uint64_t X15 = ctx->state[15];
 	size_t ctr = CSX_ROUND_COUNT;
 
-	/* new rotational constants=
-	38,19,10,55
-	33,4,51,13
-	16,34,56,51
-	4,53,42,41
-	34,41,59,17
-	23,31,37,20
-	31,44,47,46
+	/* new rotational constants= 
+	38,19,10,55 
+	33,4,51,13 
+	16,34,56,51 
+	4,53,42,41 
+	34,41,59,17 
+	23,31,37,20 
+	31,44,47,46 
 	12,47,44,30 */
 
 	while (ctr != 0)
@@ -522,6 +522,15 @@ static void csx_permute_p4x1024h(csx_avx256_state* ctx)
 
 #endif
 
+static csx_mac_update(qsc_csx_state* ctx, const uint8_t* input, size_t length)
+{
+#if defined(QSC_CSX_KPA_AUTHENTICATION)
+	qsc_kpa_update(&ctx->kstate, input, length);
+#else
+	qsc_kmac_update(&ctx->kstate, keccak_rate_512, input, length);
+#endif
+}
+
 static void csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* input, size_t length)
 {
 	size_t oft;
@@ -552,7 +561,7 @@ static void csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* in
 
 			for (i = 0; i < 16; ++i)
 			{
-				tmpin = csx_load512((uint8_t*)(input + oft + (i * 8)));
+				tmpin = csx_load512(((uint8_t*)input + oft + (i * 8)));
 				ctxw.outw[i] = _mm512_xor_si512(ctxw.outw[i], tmpin);
 				csx_store512(((uint8_t*)output + oft + (i * 8)), ctxw.outw[i]);
 			}
@@ -594,7 +603,7 @@ static void csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* in
 
 			for (i = 0; i < 16; ++i)
 			{
-				tmpin = csx_load256((uint8_t*)(input + oft + (i * 8)));
+				tmpin = csx_load256(((uint8_t*)input + oft + (i * 8)));
 				ctxw.outw[i] = _mm256_xor_si256(ctxw.outw[i], tmpin);
 				csx_store256(((uint8_t*)output + oft + (i * 8)), ctxw.outw[i]);
 			}
@@ -630,7 +639,7 @@ static void csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* in
 		uint8_t tmp[QSC_CSX_BLOCK_SIZE] = { 0 };
 		csx_permute_p1024c(ctx, tmp);
 		csx_increment(ctx);
-		memcpy(((uint8_t*)output + oft), tmp, length);
+		qsc_memutils_copy(((uint8_t*)output + oft), tmp, length);
 		qsc_memutils_xor(((uint8_t*)output + oft), ((uint8_t*)input + oft), length);
 	}
 }
@@ -668,11 +677,15 @@ static void csx_finalize(qsc_csx_state* ctx, uint8_t* output)
 	uint8_t ctr[sizeof(uint64_t)] = { 0 };
 
 	qsc_intutils_le64to8(ctr, ctx->counter);
-	qsc_kmac_update(&ctx->kstate, keccak_rate_512, ctr, sizeof(ctr));
+	csx_mac_update(ctx, ctr, sizeof(ctr));
 
+#if defined(QSC_CSX_KPA_AUTHENTICATION)
+	/* finalize the mac and append code to output */
+	qsc_kpa_finalize(&ctx->kstate, output, QSC_CSX_MAC_SIZE);
+#else
 	/* finalize the mac and append code to output */
 	qsc_kmac_finalize(&ctx->kstate, keccak_rate_512, output, QSC_CSX_MAC_SIZE);
-	ctx->aadlen = 0;
+#endif
 }
 
 /* csx common */
@@ -684,10 +697,15 @@ void qsc_csx_dispose(qsc_csx_state* ctx)
 	/* clear state */
 	if (ctx != NULL)
 	{
+#if defined(QSC_CSX_AUTHENTICATED)
+#	if defined(QSC_CSX_KPA_AUTHENTICATION)
+		qsc_kpa_dispose(&ctx->kstate);
+#	else
 		qsc_keccak_dispose(&ctx->kstate);
+#	endif
+#endif
+
 		qsc_intutils_clear64(ctx->state, QSC_CSX_STATE_SIZE);
-		//qsc_intutils_clear64(ctx->nonce, QSC_CSX_NONCE_SIZE);
-		ctx->aadlen = 0;
 		ctx->counter = 0;
 		ctx->encrypt = false;
 	}
@@ -701,8 +719,6 @@ void qsc_csx_initialize(qsc_csx_state* ctx, const qsc_csx_keyparams* keyparams, 
 
 	ctx->counter = 0;
 	ctx->encrypt = encryption;
-	ctx->aad = NULL;
-	ctx->aadlen = 0;
 
 #if defined(QSC_CSX_AUTHENTICATED)
 
@@ -739,8 +755,13 @@ void qsc_csx_initialize(qsc_csx_state* ctx, const qsc_csx_keyparams* keyparams, 
 	qsc_memutils_copy(mck, buf, sizeof(mck));
 
 	/* initialize the mac generator */
-	qsc_memutils_clear((uint8_t*)ctx->kstate.state, QSC_KECCAK_STATE_SIZE * sizeof(uint64_t));
+	qsc_memutils_clear((uint8_t*)ctx->kstate.state, sizeof(ctx->kstate.state));
+
+#if defined(QSC_CSX_KPA_AUTHENTICATION)
+	qsc_kpa_initialize(&ctx->kstate, mck, sizeof(mck), NULL, 0);
+#else
 	qsc_kmac_initialize(&ctx->kstate, keccak_rate_512, mck, sizeof(mck), NULL, 0);
+#endif
 
 #else
 
@@ -750,7 +771,7 @@ void qsc_csx_initialize(qsc_csx_state* ctx, const qsc_csx_keyparams* keyparams, 
 	if (keyparams->infolen == 0)
 	{
 		qsc_memutils_copy(inf, csx_info, QSC_CSX_INFO_SIZE);
-	}
+}
 	else
 	{
 		const size_t INFLEN = qsc_intutils_min(keyparams->infolen, QSC_CSX_INFO_SIZE);
@@ -763,12 +784,22 @@ void qsc_csx_initialize(qsc_csx_state* ctx, const qsc_csx_keyparams* keyparams, 
 #endif
 }
 
-void qsc_csx_set_associated(qsc_csx_state* ctx, const uint8_t* data, size_t datalen)
+void qsc_csx_set_associated(qsc_csx_state* ctx, const uint8_t* data, size_t length)
 {
 	assert(ctx != NULL);
+	assert(data != NULL);
+	assert(length != 0);
 
-	ctx->aad = data;
-	ctx->aadlen = datalen;
+	if (data != NULL && length != 0)
+	{
+		uint8_t code[sizeof(uint32_t)] = { 0 };
+
+		/* add the ad data to the hash */
+		csx_mac_update(ctx, data, length);
+		/* add the length of the ad */
+		qsc_intutils_le32to8(code, (uint32_t)length);
+		csx_mac_update(ctx, code, sizeof(code));
+	}
 }
 
 bool qsc_csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* input, size_t length)
@@ -777,11 +808,11 @@ bool qsc_csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* input
 	assert(output != NULL);
 	assert(input != NULL);
 
-	uint8_t ncopy[QSC_CSX_NONCE_SIZE] = { 0 };
 	bool res;
 
 #if defined(QSC_CSX_AUTHENTICATED)
 
+	uint8_t ncopy[QSC_CSX_NONCE_SIZE] = { 0 };
 	res = false;
 
 	/* store the nonce */
@@ -791,14 +822,8 @@ bool qsc_csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* input
 	/* update the processed bytes counter */
 	ctx->counter += length;
 
-	/* update the mac with the aad */
-	if (ctx->aadlen != 0)
-	{
-		qsc_kmac_update(&ctx->kstate, keccak_rate_512, ctx->aad, ctx->aadlen);
-	}
-
 	/* update the mac with the nonce */
-	qsc_kmac_update(&ctx->kstate, keccak_rate_512, ncopy, sizeof(ncopy));
+	csx_mac_update(ctx, ncopy, sizeof(ncopy));
 
 	if (ctx->encrypt)
 	{
@@ -806,7 +831,7 @@ bool qsc_csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* input
 		csx_transform(ctx, output, input, length);
 
 		/* update the mac with the cipher-text */
-		qsc_kmac_update(&ctx->kstate, keccak_rate_512, output, length);
+		csx_mac_update(ctx, output, length);
 
 		/* mac the cipher-text appending the code to the end of the array */
 		csx_finalize(ctx, output + length);
@@ -817,7 +842,7 @@ bool qsc_csx_transform(qsc_csx_state* ctx, uint8_t* output, const uint8_t* input
 		uint8_t code[QSC_CSX_MAC_SIZE] = { 0 };
 
 		/* update the mac with the cipher-text */
-		qsc_kmac_update(&ctx->kstate, keccak_rate_512, input, length);
+		csx_mac_update(ctx, input, length);
 
 		/* generate the internal mac code */
 		csx_finalize(ctx, code);
